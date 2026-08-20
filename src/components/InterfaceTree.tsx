@@ -252,6 +252,8 @@ export function PromptDialog({
   title,
   nameLabel,
   keyLabel,
+  description,
+  mode = "create",
   extraName,
   extraKey,
   onClose,
@@ -262,15 +264,17 @@ export function PromptDialog({
   title: string;
   nameLabel: string;
   keyLabel?: string;
+  description?: boolean;
+  mode?: "create" | "rename";
   extraName?: string;
   extraKey?: string;
   onClose: () => void;
-  onSubmit: (key: string, name: string) => Promise<void>;
+  onSubmit: (a: string, b: string) => Promise<void>;
   confirmText?: string;
 }) {
   const [name, setName] = useState(extraName ?? "");
   const [key, setKey] = useState(extraKey ?? "");
-  const [autoKey, setAutoKey] = useState(!extraKey);
+  const [desc, setDesc] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -279,17 +283,27 @@ export function PromptDialog({
       setErr("请填写名称");
       return;
     }
-    let finalKey = key.trim();
-    if (keyLabel && autoKey) {
-      finalKey = sanitize(finalKey || name);
-    }
-    if ((keyLabel !== undefined) && !finalKey) {
-      setErr("英文键不能为空（仅限字母/数字/连字符）");
+    if (mode === "rename") {
+      const finalKey = sanitize(key);
+      if (!finalKey) {
+        setErr("英文键不能为空（仅限字母/数字/连字符）");
+        return;
+      }
+      setBusy(true);
+      try {
+        await onSubmit(finalKey, name.trim());
+        onClose();
+      } catch (e) {
+        setErr(String(e));
+      } finally {
+        setBusy(false);
+      }
       return;
     }
+    // create：英文键由系统自动生成
     setBusy(true);
     try {
-      await onSubmit(finalKey, name.trim());
+      await onSubmit(name.trim(), desc.trim());
       onClose();
     } catch (e) {
       setErr(String(e));
@@ -306,24 +320,30 @@ export function PromptDialog({
           <Input
             autoFocus
             value={name}
-            onChange={(e) => {
-              setName(e.target.value);
-              if (keyLabel && autoKey) setKey(sanitize(e.target.value));
-            }}
+            onChange={(e) => setName(e.target.value)}
           />
         </div>
-        {keyLabel !== undefined && (
+        {mode === "rename" ? (
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">{keyLabel}</label>
+            <label className="mb-1 block text-xs text-muted-foreground">{keyLabel ?? "英文键"}</label>
             <Input
               value={key}
-              onChange={(e) => {
-                setKey(e.target.value);
-                setAutoKey(false);
-              }}
+              onChange={(e) => setKey(e.target.value)}
               placeholder="英文键，如 order-service"
             />
           </div>
+        ) : (
+          description && (
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">描述（可选）</label>
+              <textarea
+                className="h-16 w-full resize-y rounded-md border border-border bg-muted p-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring"
+                value={desc}
+                onChange={(e) => setDesc(e.target.value)}
+              />
+              <p className="mt-1 text-[11px] text-muted-foreground">英文键由系统自动生成，无需填写。</p>
+            </div>
+          )
         )}
         {err && <p className="text-xs text-red-400">{err}</p>}
         <DialogFooter>

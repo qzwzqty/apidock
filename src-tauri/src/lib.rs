@@ -82,33 +82,41 @@ fn list_projects<'r>(
 
 #[tauri::command]
 fn create_team(
-    state: tauri::State<'_, AppState>,
-    key: String,
+    state: State<'_, AppState>,
     name: String,
+    description: Option<String>,
 ) -> Result<TeamInfo, String> {
     let root = with_root(&state)?;
-    let key = storage::sanitize_key(&key);
-    if key.is_empty() {
-        return Err("团队键不能为空".into());
-    }
+    let exists = |k: &str| storage::list_teams(&root).iter().any(|t| t.key == k);
+    let key = storage::generate_key(&name, exists);
     let name = if name.trim().is_empty() { key.clone() } else { name };
-    storage::create_team(&root, &key, &name)
+    let team = storage::create_team(&root, &key, &name)?;
+    if let Some(desc) = description {
+        if !desc.trim().is_empty() {
+            storage::set_team_description(&root, &key, desc.trim())?;
+        }
+    }
+    Ok(team)
 }
 
 #[tauri::command]
 fn create_project(
-    state: tauri::State<'_, AppState>,
+    state: State<'_, AppState>,
     team_key: String,
-    key: String,
     name: String,
+    description: Option<String>,
 ) -> Result<ProjectInfo, String> {
     let root = with_root(&state)?;
-    let key = storage::sanitize_key(&key);
-    if key.is_empty() {
-        return Err("项目键不能为空".into());
-    }
+    let exists = |k: &str| storage::list_projects(&root, &team_key).iter().any(|p| p.key == k);
+    let key = storage::generate_key(&name, exists);
     let name = if name.trim().is_empty() { key.clone() } else { name };
-    storage::create_project(&root, &team_key, &key, &name)
+    let project = storage::create_project(&root, &team_key, &key, &name)?;
+    if let Some(desc) = description {
+        if !desc.trim().is_empty() {
+            storage::set_project_description(&root, &team_key, &key, desc.trim())?;
+        }
+    }
+    Ok(project)
 }
 
 #[tauri::command]
@@ -204,22 +212,47 @@ fn list_interface_tree(
     Ok(storage::list_interface_tree(&root, &team_key, &project_key))
 }
 
+/// 取接口树下某分组路径下的直接子节点键（含分组键与接口键）
+fn dir_keys(nodes: &[TreeNode], at: &[String]) -> Vec<String> {
+    if at.is_empty() {
+        return nodes
+            .iter()
+            .map(|n| match n {
+                TreeNode::Group { key, .. } | TreeNode::Interface { key, .. } => key.clone(),
+            })
+            .collect();
+    }
+    for n in nodes {
+        if let TreeNode::Group { key, children, .. } = n {
+            if key == &at[0] {
+                return dir_keys(children, &at[1..]);
+            }
+        }
+    }
+    Vec::new()
+}
+
 #[tauri::command]
 fn create_group(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
     group_path: Vec<String>,
-    key: String,
     name: String,
+    description: Option<String>,
 ) -> Result<(), String> {
     let root = with_root(&state)?;
-    let key = storage::sanitize_key(&key);
-    if key.is_empty() {
-        return Err("分组键不能为空".into());
-    }
+    let keys = dir_keys(&storage::list_interface_tree(&root, &team_key, &project_key), &group_path);
+    let exists = move |k: &str| keys.contains(&k.to_string());
+    let key = storage::generate_key(&name, exists);
     let name = if name.trim().is_empty() { key.clone() } else { name };
-    storage::create_group(&root, &team_key, &project_key, &group_path, &key, &name)
+    storage::create_group(&root, &team_key, &project_key, &group_path, &key, &name)?;
+    if let Some(desc) = description {
+        if !desc.trim().is_empty() {
+            storage::set_group_description(&root, &team_key, &project_key, &group_path, desc.trim())?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -250,21 +283,35 @@ fn delete_group(
     storage::delete_group(&root, &team_key, &project_key, &group_path)
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CreatedInterface {
+    key: String,
+    file: InterfaceFile,
+}
+
 #[tauri::command]
 fn create_interface(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
     group_path: Vec<String>,
-    key: String,
     name: String,
-) -> Result<InterfaceFile, String> {
+    description: Option<String>,
+) -> Result<CreatedInterface, String> {
     let root = with_root(&state)?;
-    let key = storage::sanitize_key(&key);
-    if key.is_empty() {
-        return Err("接口键不能为空".into());
+    let keys = dir_keys(&storage::list_interface_tree(&root, &team_key, &project_key), &group_path);
+    let exists = move |k: &str| keys.contains(&k.to_string());
+    let key = storage::generate_key(&name, exists);
+    let name = if name.trim().is_empty() { key.clone() } else { name };
+    let mut iface = storage::create_interface(&root, &team_key, &project_key, &group_path, &key, &name)?;
+    if let Some(desc) = description {
+        if !desc.trim().is_empty() {
+            iface.description = desc.trim().to_string();
+            storage::save_interface(&root, &team_key, &project_key, &group_path, &key, &iface)?;
+        }
     }
-    storage::create_interface(&root, &team_key, &project_key, &group_path, &key, &name)
+    Ok(CreatedInterface { key, file: iface })
 }
 
 #[tauri::command]

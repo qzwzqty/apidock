@@ -34,10 +34,10 @@ interface WorkspaceStore {
   refreshTeam: (teamKey: string) => Promise<void>;
   loadTeamsAndProjects: () => Promise<void>;
   selectTeam: (teamKey: string) => Promise<void>;
-  createTeam: (key: string, name: string) => Promise<void>;
+  createTeam: (name: string, description?: string) => Promise<void>;
   deleteTeam: (teamKey: string) => Promise<void>;
   renameTeam: (teamKey: string, newKey: string, newName: string) => Promise<void>;
-  createProject: (key: string, name: string) => Promise<void>;
+  createProject: (teamKey: string, name: string, description?: string) => Promise<void>;
   deleteProject: (projectKey: string) => Promise<void>;
   renameProject: (teamKey: string, projectKey: string, newKey: string, newName: string) => Promise<void>;
   openProject: (teamKey: string, projectKey: string) => void;
@@ -116,8 +116,8 @@ export const useWorkspace = create<WorkspaceStore>()((set, get) => ({
     await get().refreshTeam(teamKey);
   },
 
-  createTeam: async (key, name) => {
-    await api.createTeam(sanitizeKey(key), name);
+  createTeam: async (name, description) => {
+    await api.createTeam(name, description);
     const teams = await api.listTeams();
     set({ teams });
     const first = teams[0]?.key;
@@ -148,10 +148,10 @@ export const useWorkspace = create<WorkspaceStore>()((set, get) => ({
     }
   },
 
-  createProject: async (key, name) => {
+  createProject: async (name, description) => {
     const teamKey = get().selectedTeamKey;
     if (!teamKey) return;
-    await api.createProject(teamKey, sanitizeKey(key), name);
+    await api.createProject(teamKey, name, description);
     await get().refreshTeam(teamKey);
   },
 

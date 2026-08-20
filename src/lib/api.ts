@@ -175,6 +175,11 @@ export type TreeNode =
   | { type: "group"; key: string; name: string; children: TreeNode[] }
   | { type: "interface"; key: string; name: string; method: string };
 
+export interface CreatedInterface {
+  key: string;
+  file: InterfaceFile;
+}
+
 export const api = {
   getSession: () => invoke<AppSession>("get_session"),
   pickDataRoot: async (): Promise<string | null> => {
@@ -186,10 +191,10 @@ export const api = {
   setDataRoot: (path: string) => invoke<AppSession>("set_data_root", { path }),
   listTeams: () => invoke<TeamInfo[]>("list_teams"),
   listProjects: (teamKey: string) => invoke<ProjectInfo[]>("list_projects", { teamKey }),
-  createTeam: (key: string, name: string) =>
-    invoke<TeamInfo>("create_team", { key, name }),
-  createProject: (teamKey: string, key: string, name: string) =>
-    invoke<ProjectInfo>("create_project", { teamKey, key, name }),
+  createTeam: (name: string, description?: string) =>
+    invoke<TeamInfo>("create_team", { name, description: description ?? null }),
+  createProject: (teamKey: string, name: string, description?: string) =>
+    invoke<ProjectInfo>("create_project", { teamKey, name, description: description ?? null }),
   deleteTeam: (teamKey: string) => invoke<void>("delete_team", { teamKey }),
   renameTeam: (teamKey: string, newKey: string, newName: string) =>
     invoke<void>("rename_team", { teamKey, newKey, newName }),
@@ -206,14 +211,14 @@ export const api = {
 
   listInterfaceTree: (teamKey: string, projectKey: string) =>
     invoke<TreeNode[]>("list_interface_tree", { teamKey, projectKey }),
-  createGroup: (teamKey: string, projectKey: string, groupPath: string[], key: string, name: string) =>
-    invoke<void>("create_group", { teamKey, projectKey, groupPath, key, name }),
+  createGroup: (teamKey: string, projectKey: string, groupPath: string[], name: string, description?: string) =>
+    invoke<void>("create_group", { teamKey, projectKey, groupPath, name, description: description ?? null }),
   renameGroup: (teamKey: string, projectKey: string, groupPath: string[], newKey: string, newName: string) =>
     invoke<void>("rename_group", { teamKey, projectKey, groupPath, newKey, newName }),
   deleteGroup: (teamKey: string, projectKey: string, groupPath: string[]) =>
     invoke<void>("delete_group", { teamKey, projectKey, groupPath }),
-  createInterface: (teamKey: string, projectKey: string, groupPath: string[], key: string, name: string) =>
-    invoke<InterfaceFile>("create_interface", { teamKey, projectKey, groupPath, key, name }),
+  createInterface: (teamKey: string, projectKey: string, groupPath: string[], name: string, description?: string) =>
+    invoke<CreatedInterface>("create_interface", { teamKey, projectKey, groupPath, name, description: description ?? null }),
   getInterface: (teamKey: string, projectKey: string, groupPath: string[], ifaceKey: string) =>
     invoke<InterfaceFile>("get_interface", { teamKey, projectKey, groupPath, ifaceKey }),
   saveInterface: (teamKey: string, projectKey: string, groupPath: string[], ifaceKey: string, iface: InterfaceFile) =>

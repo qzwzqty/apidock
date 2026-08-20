@@ -261,9 +261,9 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
           open
           title="新建分组"
           nameLabel="分组名"
-          keyLabel="英文键"
+          description
           onClose={() => setDlg(null)}
-          onSubmit={(key, name) => createGroup(tabId, teamKey, projectKey, dlg.parentPath, key, name)}
+          onSubmit={(name, description) => createGroup(tabId, teamKey, projectKey, dlg.parentPath, name, description)}
         />
       )}
       {dlg?.kind === "createIface" && (
@@ -271,9 +271,9 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
           open
           title="新建接口"
           nameLabel="接口名"
-          keyLabel="英文键"
+          description
           onClose={() => setDlg(null)}
-          onSubmit={(key, name) => createInterface(tabId, teamKey, projectKey, dlg.groupPath, key, name)}
+          onSubmit={(name, description) => createInterface(tabId, teamKey, projectKey, dlg.groupPath, name, description)}
         />
       )}
       {dlg?.kind === "renameGroup" && (
@@ -282,6 +282,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
           title="重命名分组"
           nameLabel="显示名"
           keyLabel="英文键"
+          mode="rename"
           extraName={dlg.ref.key}
           extraKey={dlg.ref.key}
           onClose={() => setDlg(null)}

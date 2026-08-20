@@ -199,10 +199,9 @@ export function MainWindow() {
         open={showTeamDlg}
         title="新建团队"
         nameLabel="团队名"
-        keyLabel="英文键"
         onClose={() => setShowTeamDlg(false)}
-        onSubmit={async (key, name) => {
-          await createTeam(key, name);
+        onSubmit={async (name, description) => {
+          await createTeam(name, description);
           setShowTeamDlg(false);
         }}
       />
@@ -210,10 +209,9 @@ export function MainWindow() {
         open={showProjDlg}
         title={`在「${selectedTeam?.name ?? ""}」新建项目`}
         nameLabel="项目名"
-        keyLabel="英文键"
         onClose={() => setShowProjDlg(false)}
-        onSubmit={async (key, name) => {
-          await createProject(key, name);
+        onSubmit={async (name, description) => {
+          await createProject(name, description);
           setShowProjDlg(false);
         }}
       />
@@ -222,7 +220,7 @@ export function MainWindow() {
           open
           title="重命名团队"
           nameLabel="团队名"
-          keyLabel="英文键"
+          mode="rename"
           extraName={renameTeamTarget.name}
           extraKey={renameTeamTarget.key}
           confirmText="重命名"
@@ -238,7 +236,7 @@ export function MainWindow() {
           open
           title="重命名项目"
           nameLabel="项目名"
-          keyLabel="英文键"
+          mode="rename"
           extraName={renameProjTarget.name}
           extraKey={renameProjTarget.key}
           confirmText="重命名"
@@ -308,7 +306,7 @@ function CreateDialog({
   open,
   title,
   nameLabel,
-  keyLabel,
+  mode = "create",
   extraName,
   extraKey,
   confirmText,
@@ -318,16 +316,18 @@ function CreateDialog({
   open: boolean;
   title: string;
   nameLabel: string;
-  keyLabel: string;
+  /** create：显示「名称 + 描述（英文键自动生成）」，onSubmit(name, description) */
+  /** rename：显示「名称 + 英文键（可改）」，onSubmit(key, name) */
+  mode?: "create" | "rename";
   extraName?: string;
   extraKey?: string;
   confirmText?: string;
   onClose: () => void;
-  onSubmit: (key: string, name: string) => Promise<void>;
+  onSubmit: (a: string, b: string) => Promise<void>;
 }) {
   const [name, setName] = useState(extraName ?? "");
   const [key, setKey] = useState(extraKey ?? "");
-  const [autoKey, setAutoKey] = useState(!extraName);
+  const [desc, setDesc] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -336,14 +336,26 @@ function CreateDialog({
       setErr("请填写名称");
       return;
     }
-    const finalKey = (autoKey ? sanitizeKey(name) : sanitizeKey(key)).trim();
-    if (!finalKey) {
-      setErr("英文键不能为空，且需为字母/数字/连字符（中文名建议手动填写英文键）");
+    if (mode === "rename") {
+      const finalKey = sanitizeKey(key);
+      if (!finalKey) {
+        setErr("英文键不能为空，且需为字母/数字/连字符");
+        return;
+      }
+      setBusy(true);
+      try {
+        await onSubmit(finalKey, name.trim());
+      } catch (e) {
+        setErr(String(e));
+      } finally {
+        setBusy(false);
+      }
       return;
     }
+    // create：英文键由系统自动生成
     setBusy(true);
     try {
-      await onSubmit(finalKey, name.trim());
+      await onSubmit(name.trim(), desc.trim());
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -359,24 +371,31 @@ function CreateDialog({
           <Input
             autoFocus
             value={name}
-            onChange={(e) => {
-              setName(e.target.value);
-              if (autoKey) setKey(sanitizeKey(e.target.value));
-            }}
+            onChange={(e) => setName(e.target.value)}
             placeholder="显示名称（可为中文）"
           />
         </div>
-        <div>
-          <label className="mb-1 block text-xs text-muted-foreground">{keyLabel}</label>
-          <Input
-            value={key}
-            onChange={(e) => {
-              setKey(e.target.value);
-              setAutoKey(false);
-            }}
-            placeholder="英文键，如 order-service"
-          />
-        </div>
+        {mode === "create" ? (
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">描述（可选）</label>
+            <textarea
+              className="h-20 w-full resize-y rounded-md border border-border bg-muted p-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring"
+              value={desc}
+              onChange={(e) => setDesc(e.target.value)}
+              placeholder="一句说明这个团队 / 项目的用途"
+            />
+            <p className="mt-1 text-[11px] text-muted-foreground">英文键由系统自动生成，无需填写。</p>
+          </div>
+        ) : (
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">英文键</label>
+            <Input
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              placeholder="目录/文件名（字母、数字、连字符）"
+            />
+          </div>
+        )}
         {err && <p className="text-xs text-red-400">{err}</p>}
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={busy}>

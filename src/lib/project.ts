@@ -31,10 +31,10 @@ interface ProjectStore {
   closeInterface: (tabId: string, id: string) => void;
   setActive: (tabId: string, id: string) => void;
   refresh: (tabId: string, teamKey: string, projectKey: string) => Promise<void>;
-  createGroup: (tabId: string, teamKey: string, projectKey: string, parentPath: string[], key: string, name: string) => Promise<void>;
+  createGroup: (tabId: string, teamKey: string, projectKey: string, parentPath: string[], name: string, description?: string) => Promise<void>;
   renameGroup: (tabId: string, teamKey: string, projectKey: string, groupPath: string[], newKey: string, newName: string) => Promise<void>;
   deleteGroup: (tabId: string, teamKey: string, projectKey: string, groupPath: string[]) => Promise<void>;
-  createInterface: (tabId: string, teamKey: string, projectKey: string, groupPath: string[], key: string, name: string) => Promise<void>;
+  createInterface: (tabId: string, teamKey: string, projectKey: string, groupPath: string[], name: string, description?: string) => Promise<void>;
   renameInterface: (tabId: string, teamKey: string, projectKey: string, groupPath: string[], key: string, name: string) => Promise<void>;
   deleteInterface: (tabId: string, teamKey: string, projectKey: string, groupPath: string[], key: string) => Promise<void>;
   saveDoc: (tabId: string, teamKey: string, projectKey: string, groupPath: string[], key: string, doc: InterfaceFile) => Promise<void>;
@@ -110,8 +110,8 @@ export const useProject = create<ProjectStore>()((set, get) => ({
     await get().loadTree(tabId, teamKey, projectKey);
   },
 
-  createGroup: async (tabId, teamKey, projectKey, parentPath, key, name) => {
-    await api.createGroup(teamKey, projectKey, parentPath, key, name);
+  createGroup: async (tabId, teamKey, projectKey, parentPath, name, description) => {
+    await api.createGroup(teamKey, projectKey, parentPath, name, description);
     await get().loadTree(tabId, teamKey, projectKey);
   },
 
@@ -136,10 +136,10 @@ export const useProject = create<ProjectStore>()((set, get) => ({
     await get().loadTree(tabId, teamKey, projectKey);
   },
 
-  createInterface: async (tabId, teamKey, projectKey, groupPath, key, name) => {
-    await api.createInterface(teamKey, projectKey, groupPath, key, name);
+  createInterface: async (tabId, teamKey, projectKey, groupPath, name, description) => {
+    const created = await api.createInterface(teamKey, projectKey, groupPath, name, description);
     await get().loadTree(tabId, teamKey, projectKey);
-    await get().openInterface(tabId, teamKey, projectKey, groupPath, key);
+    await get().openInterface(tabId, teamKey, projectKey, groupPath, created.key);
   },
 
   renameInterface: async (tabId, teamKey, projectKey, groupPath, key, name) => {

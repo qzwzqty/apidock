@@ -64,6 +64,8 @@ impl WorkspaceState {
 struct TeamMeta {
     version: u32,
     name: String,
+    #[serde(default)]
+    description: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -71,6 +73,8 @@ struct TeamMeta {
 struct ProjectMeta {
     version: u32,
     name: String,
+    #[serde(default)]
+    description: String,
     #[serde(default)]
     active_environment_id: Option<String>,
     #[serde(default)]
@@ -337,10 +341,25 @@ pub fn create_team(root: &Path, key: &str, name: &str) -> Result<TeamInfo, Strin
         return Err(format!("团队键 {key} 已存在"));
     }
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let meta = TeamMeta { version: SCHEMA_VERSION, name: name.to_string() };
+    let meta = TeamMeta { version: SCHEMA_VERSION, name: name.to_string(), description: String::new() };
     let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
     atomic_write(&dir.join(TEAM_FILE), &text).map_err(|e| e.to_string())?;
     Ok(TeamInfo { key: key.to_string(), name: name.to_string() })
+}
+
+pub fn set_team_description(root: &Path, team_key: &str, description: &str) -> Result<(), String> {
+    let dir = team_dir(root, team_key);
+    if !dir.exists() {
+        return Err(format!("团队 {team_key} 不存在"));
+    }
+    let mut meta = read_json::<TeamMeta>(&dir.join(TEAM_FILE)).unwrap_or(TeamMeta {
+        version: SCHEMA_VERSION,
+        name: team_key.into(),
+        description: String::new(),
+    });
+    meta.description = description.to_string();
+    let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
+    atomic_write(&dir.join(TEAM_FILE), &text).map_err(|e| e.to_string())
 }
 
 pub fn create_project(root: &Path, team_key: &str, key: &str, name: &str) -> Result<ProjectInfo, String> {
@@ -356,6 +375,7 @@ pub fn create_project(root: &Path, team_key: &str, key: &str, name: &str) -> Res
     let meta = ProjectMeta {
         version: SCHEMA_VERSION,
         name: name.to_string(),
+        description: String::new(),
         active_environment_id: Some("env-prod".into()),
         global_variables: Vec::new(),
         global_params: GlobalParams::default(),
@@ -476,6 +496,8 @@ pub enum TreeNode {
 struct GroupMeta {
     version: u32,
     name: String,
+    #[serde(default)]
+    description: String,
 }
 
 fn default_environments() -> Vec<(&'static str, EnvironmentFile)> {
@@ -568,6 +590,26 @@ fn project_api_exists(root: &Path, team_key: &str, project_key: &str) -> bool {
     project_api_dir(root, team_key, project_key).is_dir()
 }
 
+/// 由显示名自动生成英文键：可转写则用转写，否则随机短 id；冲突自动追加序号
+pub fn generate_key<F: FnMut(&str) -> bool>(display: &str, mut exists: F) -> String {
+    let base = sanitize_key(display);
+    let base = if base.is_empty() {
+        format!("item-{}", &uuid::Uuid::new_v4().simple().to_string()[..6])
+    } else {
+        base
+    };
+    if !exists(&base) {
+        return base;
+    }
+    let mut n = 1;
+    let mut key = format!("{base}-{n}");
+    while exists(&key) {
+        n += 1;
+        key = format!("{base}-{n}");
+    }
+    key
+}
+
 pub fn create_group(
     root: &Path,
     team_key: &str,
@@ -588,7 +630,28 @@ pub fn create_group(
         return Err(format!("分组键 {key} 已存在"));
     }
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let meta = GroupMeta { version: SCHEMA_VERSION, name: name.to_string() };
+    let meta = GroupMeta { version: SCHEMA_VERSION, name: name.to_string(), description: String::new() };
+    let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
+    atomic_write(&dir.join(GROUP_FILE), &text).map_err(|e| e.to_string())
+}
+
+pub fn set_group_description(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    group_path: &[String],
+    description: &str,
+) -> Result<(), String> {
+    let dir = group_dir_at(root, team_key, project_key, group_path);
+    if !dir.is_dir() {
+        return Err("分组不存在".into());
+    }
+    let mut meta = read_json::<GroupMeta>(&dir.join(GROUP_FILE)).unwrap_or(GroupMeta {
+        version: SCHEMA_VERSION,
+        name: group_path.last().cloned().unwrap_or_default(),
+        description: String::new(),
+    });
+    meta.description = description.to_string();
     let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
     atomic_write(&dir.join(GROUP_FILE), &text).map_err(|e| e.to_string())
 }
@@ -609,6 +672,7 @@ pub fn rename_group(
         return Err("不能重命名项目根".into());
     }
     let parent = dir.parent().map(Path::to_path_buf).unwrap_or_default();
+    let description = read_json::<GroupMeta>(&dir.join(GROUP_FILE)).map(|m| m.description).unwrap_or_default();
     if new_key != group_path.last().map(String::as_str).unwrap_or_default() {
         let target = parent.join(new_key);
         if target.exists() {
@@ -616,7 +680,7 @@ pub fn rename_group(
         }
         fs::rename(&dir, &target).map_err(|e| e.to_string())?;
     }
-    let meta = GroupMeta { version: SCHEMA_VERSION, name: new_name.to_string() };
+    let meta = GroupMeta { version: SCHEMA_VERSION, name: new_name.to_string(), description };
     let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
     atomic_write(&parent.join(new_key).join(GROUP_FILE), &text).map_err(|e| e.to_string())
 }
@@ -875,6 +939,17 @@ pub fn set_active_environment(
     write_project_meta(root, team_key, project_key, &meta)
 }
 
+pub fn set_project_description(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    description: &str,
+) -> Result<(), String> {
+    let mut meta = read_project_meta(root, team_key, project_key).ok_or("项目不存在")?;
+    meta.description = description.to_string();
+    write_project_meta(root, team_key, project_key, &meta)
+}
+
 pub fn get_project_settings(
     root: &Path,
     team_key: &str,
@@ -923,8 +998,9 @@ pub fn rename_team(root: &Path, team_key: &str, new_key: &str, new_name: &str) -
     if !dir.exists() {
         return Err(format!("团队 {team_key} 不存在"));
     }
+    let description = read_json::<TeamMeta>(&dir.join(TEAM_FILE)).map(|m| m.description).unwrap_or_default();
     let dir = rename_dir_if_needed(&dir, new_key)?;
-    let meta = TeamMeta { version: SCHEMA_VERSION, name: new_name.to_string() };
+    let meta = TeamMeta { version: SCHEMA_VERSION, name: new_name.to_string(), description };
     let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
     atomic_write(&dir.join(TEAM_FILE), &text).map_err(|e| e.to_string())
 }
@@ -938,6 +1014,7 @@ pub fn rename_project(root: &Path, team_key: &str, project_key: &str, new_key: &
     let mut meta = read_project_meta(root, team_key, project_key).unwrap_or(ProjectMeta {
         version: SCHEMA_VERSION,
         name: project_key.into(),
+        description: String::new(),
         active_environment_id: None,
         global_variables: Vec::new(),
         global_params: GlobalParams::default(),
@@ -965,7 +1042,7 @@ pub fn move_interface(
         cur = cur.join(seg);
         if !cur.is_dir() {
             fs::create_dir_all(cur.join(GROUP_FILE).parent().unwrap()).map_err(|e| e.to_string())?;
-            let meta = GroupMeta { version: SCHEMA_VERSION, name: seg.clone() };
+            let meta = GroupMeta { version: SCHEMA_VERSION, name: seg.clone(), description: String::new() };
             let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
             atomic_write(&cur.join(GROUP_FILE), &text).map_err(|e| e.to_string())?;
         }
@@ -1008,7 +1085,7 @@ pub fn move_group(
     for seg in target_group_path {
         cur = cur.join(seg);
         if !cur.is_dir() {
-            let meta = GroupMeta { version: SCHEMA_VERSION, name: seg.clone() };
+            let meta = GroupMeta { version: SCHEMA_VERSION, name: seg.clone(), description: String::new() };
             let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
             fs::create_dir_all(cur.join(GROUP_FILE).parent().unwrap()).map_err(|e| e.to_string())?;
             atomic_write(&cur.join(GROUP_FILE), &text).map_err(|e| e.to_string())?;
@@ -1068,6 +1145,20 @@ mod tests {
         assert_eq!(sanitize_key("  API--Docs  "), "api-docs");
         assert_eq!(sanitize_key("中文团队"), "");
         assert_eq!(sanitize_key("Login_v2!"), "login-v2");
+    }
+
+    #[test]
+    fn generate_key_uniq_and_fallback() {
+        // 英文名转写 + 冲突避让
+        let mut used = std::collections::HashSet::new();
+        used.insert("order-api".to_string());
+        assert_eq!(generate_key("Order API", |k| used.contains(k)), "order-api-1");
+        used.insert("order-api-1".to_string());
+        assert_eq!(generate_key("Order API", |k| used.contains(k)), "order-api-2");
+        // 中文名 → 随机前缀
+        let k = generate_key("检索接口", |_| false);
+        assert!(k.starts_with("item-"));
+        assert!(!k.is_empty());
     }
 
     #[test]

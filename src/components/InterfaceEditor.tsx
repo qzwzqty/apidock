@@ -510,16 +510,6 @@ function JsonBodyEditor({
 }) {
   return (
     <div className="space-y-1">
-      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        <span className="w-5 shrink-0" />
-        <span className="w-44">字段名</span>
-        <span className="w-24">类型</span>
-        <span className="w-32">中文名</span>
-        <span className="w-14 shrink-0">必填</span>
-        <span className="flex-1">示例值</span>
-        <span className="w-48">说明</span>
-        <span className="w-8 shrink-0" />
-      </div>
       <JsonFieldRow
         f={json.root}
         depth={0}
@@ -539,7 +529,7 @@ function JsonBodyEditor({
   );
 }
 
-/** 树的一行：字段名 | 类型 | 中文名 | 必填 | 示例值 | 说明 | 操作 */
+/** 树的一行：字段名 | 类型 | 必填 | 示例值 | 中文名 | 说明 | 操作 */
 function JsonFieldRow({
   f,
   depth,
@@ -604,12 +594,6 @@ function JsonFieldRow({
             <option key={t} value={t}>{t}</option>
           ))}
         </select>
-        <Input
-          className="h-7 w-32"
-          placeholder="中文名"
-          value={f.name}
-          onChange={(e) => patch({ name: e.target.value })}
-        />
         <label className="flex w-14 shrink-0 items-center justify-center" title="是否必填">
           <input
             type="checkbox"
@@ -626,7 +610,13 @@ function JsonFieldRow({
           onChange={(e) => patch({ example: e.target.value })}
         />
         <Input
-          className="h-7 w-48"
+          className="h-7 w-32"
+          placeholder="中文名"
+          value={f.name}
+          onChange={(e) => patch({ name: e.target.value })}
+        />
+        <Input
+          className="h-7 flex-[1.6]"
           placeholder="说明"
           value={f.description}
           onChange={(e) => patch({ description: e.target.value })}

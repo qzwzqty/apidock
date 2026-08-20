@@ -1,9 +1,32 @@
-use crate::storage::{EnvironmentFile, GlobalParams, InterfaceFile, KeyValue};
+use crate::storage::{EnvironmentFile, GlobalParams, InterfaceFile, KeyValue, ProxyConfig};
 use crate::variables;
 use serde::Serialize;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const BODY_CAP: usize = 1_000_000;
+const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_MAX_REDIRECTS: usize = 10;
+
+#[derive(Debug, Clone)]
+pub struct SendOptions {
+    pub timeout_ms: Option<u64>,
+    pub redirect_limit: Option<u64>,
+    pub tls_verify: Option<bool>,
+    pub ca_cert_path: Option<String>,
+    pub proxy: ProxyConfig,
+}
+
+impl Default for SendOptions {
+    fn default() -> Self {
+        Self {
+            timeout_ms: None,
+            redirect_limit: None,
+            tls_verify: None,
+            ca_cert_path: None,
+            proxy: ProxyConfig::default(),
+        }
+    }
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +57,7 @@ pub async fn send(
     env: &EnvironmentFile,
     globals: &[KeyValue],
     global_params: &GlobalParams,
+    opts: &SendOptions,
 ) -> Result<SendResponse, SendErrorInfo> {
     let vars = variables::collect_vars(iface, env, globals);
 
@@ -81,9 +105,53 @@ pub async fn send(
         return Err(err("url", "URL 需以 http:// 或 https:// 开头（可使用 {{host}} 变量）"));
     }
 
-    let client = reqwest::Client::builder()
-        .build()
-        .map_err(|e| err("http", e.to_string()))?;
+    let client = {
+        let mut builder = reqwest::Client::builder();
+
+        // 超时
+        let timeout_ms = opts.timeout_ms.or(iface.timeout_ms).unwrap_or(DEFAULT_TIMEOUT_MS);
+        builder = builder.timeout(Duration::from_millis(timeout_ms.max(100)));
+
+        // 重定向
+        match opts.redirect_limit.or(iface.redirect_limit) {
+            Some(0) => builder = builder.redirect(reqwest::redirect::Policy::none()),
+            Some(n) => builder = builder.redirect(reqwest::redirect::Policy::limited(n as usize)),
+            None => builder = builder.redirect(reqwest::redirect::Policy::limited(DEFAULT_MAX_REDIRECTS)),
+        }
+
+        // TLS
+        if opts.tls_verify.or(iface.tls_verify) == Some(false) {
+            builder = builder.danger_accept_invalid_certs(true);
+        }
+        if let Some(path) = opts.ca_cert_path.as_deref().or(iface.ca_cert_path.as_deref()) {
+            if !path.trim().is_empty() {
+                let pem = std::fs::read(path.trim())
+                    .map_err(|e| err("tls", format!("读取 CA 证书 {path} 失败：{e}")))?;
+                let cert = reqwest::Certificate::from_pem(&pem)
+                    .map_err(|e| err("tls", format!("解析 CA 证书失败：{e}")))?;
+                builder = builder.add_root_certificate(cert);
+            }
+        }
+
+        // 代理：reqwest 0.13 默认会自动探测系统代理（system-proxy feature）
+        //   none/未启用  -> 显式禁用
+        //   system       -> 保持自动（默认）
+        //   custom       -> 指定代理
+        if !opts.proxy.enabled || opts.proxy.kind == "none" {
+            builder = builder.no_proxy();
+        } else if opts.proxy.kind == "custom" {
+            if !opts.proxy.url.trim().is_empty() {
+                builder = builder.proxy(
+                    reqwest::Proxy::all(opts.proxy.url.trim())
+                        .map_err(|e| err("proxy", format!("代理地址无效：{e}")))?,
+                );
+            } else {
+                builder = builder.no_proxy();
+            }
+        }
+
+        builder.build().map_err(|e| err("http", e.to_string()))?
+    };
 
     let method: reqwest::Method = iface
         .method
@@ -317,7 +385,7 @@ mod tests {
         iface.body = Body { mode: "json".into(), content: r#"{"u":"{{tok}}"}"#.into(), content_type: String::new(), form: Vec::new(), file_path: None };
         iface.variables = vec![crate::storage::KeyValue { key: "tok".into(), value: "abc123".into(), enabled: true }];
 
-        let res = send(&iface, &mock_env(), &[], &Default::default()).await.unwrap();
+        let res = send(&iface, &mock_env(), &[], &Default::default(), &SendOptions::default()).await.unwrap();
         assert_eq!(res.status, 200);
         assert!(res.body.contains("true"));
         assert!(res.headers.iter().any(|h| h.key == "content-type" && h.value.contains("application/json")));
@@ -332,7 +400,7 @@ mod tests {
     async fn unresolved_variable_rejected() {
         let mut iface: InterfaceFile = InterfaceFile::new("t");
         iface.url = "http://127.0.0.1:1/{{missing}}".into();
-        let err = send(&iface, &mock_env(), &[], &Default::default()).await.unwrap_err();
+        let err = send(&iface, &mock_env(), &[], &Default::default(), &SendOptions::default()).await.unwrap_err();
         assert_eq!(err.kind, "unresolved");
         assert!(err.message.contains("missing"));
     }
@@ -342,7 +410,7 @@ mod tests {
         // 127.0.0.1 上不可达端口
         let mut iface: InterfaceFile = InterfaceFile::new("t");
         iface.url = "http://127.0.0.1:9/x".into();
-        let err = send(&iface, &mock_env(), &[], &Default::default()).await.unwrap_err();
+        let err = send(&iface, &mock_env(), &[], &Default::default(), &SendOptions::default()).await.unwrap_err();
         assert_eq!(err.kind, "connect");
     }
 }

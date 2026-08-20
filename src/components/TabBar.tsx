@@ -1,5 +1,7 @@
-import { Home, X } from "lucide-react";
+import { useState } from "react";
+import { Home, Settings, X } from "lucide-react";
 import { useWorkspace, MAIN_TAB_ID } from "@/lib/workspace";
+import { WorkspaceSettingsDialog } from "@/components/WorkspaceSettingsDialog";
 import { cn } from "@/lib/utils";
 
 export function TabBar() {
@@ -8,6 +10,7 @@ export function TabBar() {
   const activeTab = useWorkspace((s) => s.activeTab);
   const setActiveTab = useWorkspace((s) => s.setActiveTab);
   const closeTab = useWorkspace((s) => s.closeTab);
+  const [showSettings, setShowSettings] = useState(false);
 
   const tabLabel = (teamKey: string, projectKey: string) => {
     const team = teams.find((t) => t.key === teamKey);
@@ -69,6 +72,15 @@ export function TabBar() {
           </div>
         );
       })}
+
+      <button
+        className="ml-auto flex self-center cursor-pointer items-center justify-center rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        onClick={() => setShowSettings(true)}
+        title="工作区设置（代理）"
+      >
+        <Settings className="h-4 w-4" />
+      </button>
+      <WorkspaceSettingsDialog open={showSettings} onClose={() => setShowSettings(false)} />
     </div>
   );
 }

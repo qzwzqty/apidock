@@ -38,15 +38,24 @@ impl OpenTab {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
+pub struct ProxyConfig {
+    pub enabled: bool,
+    pub kind: String, // system | custom | none
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct WorkspaceState {
     pub version: u32,
     pub open_tabs: Vec<OpenTab>,
     pub active_tab: Option<String>,
+    pub proxy: ProxyConfig,
 }
 
 impl WorkspaceState {
     pub fn new() -> Self {
-        Self { version: SCHEMA_VERSION, open_tabs: Vec::new(), active_tab: None }
+        Self { version: SCHEMA_VERSION, open_tabs: Vec::new(), active_tab: None, proxy: ProxyConfig::default() }
     }
 }
 
@@ -413,6 +422,11 @@ pub struct InterfaceFile {
     pub auth: Auth,
     pub variables: Vec<KeyValue>,
     pub description: String,
+    // 发送选项（None 用默认值）
+    pub timeout_ms: Option<u64>,
+    pub redirect_limit: Option<u64>,
+    pub tls_verify: Option<bool>,
+    pub ca_cert_path: Option<String>,
 }
 
 impl InterfaceFile {
@@ -429,6 +443,10 @@ impl InterfaceFile {
             auth: Auth::default(),
             variables: Vec::new(),
             description: String::new(),
+            timeout_ms: None,
+            redirect_limit: None,
+            tls_verify: None,
+            ca_cert_path: None,
         }
     }
 }
@@ -970,6 +988,7 @@ mod tests {
             version: 1,
             open_tabs: vec![OpenTab { team_key: "ops".into(), project_key: "user-api".into() }],
             active_tab: Some("project:ops:user-api".into()),
+            proxy: ProxyConfig::default(),
         };
         write_workspace(&root, &ws).unwrap();
         assert_eq!(read_workspace(&root).open_tabs.len(), 1);

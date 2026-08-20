@@ -16,10 +16,17 @@ export interface OpenTab {
   projectKey: string;
 }
 
+export interface ProxyConfig {
+  enabled: boolean;
+  kind: string; // system | custom | none
+  url: string;
+}
+
 export interface WorkspaceState {
   version: number;
   openTabs: OpenTab[];
   activeTab: string | null;
+  proxy?: ProxyConfig;
 }
 
 export interface AppSession {
@@ -64,6 +71,10 @@ export interface InterfaceFile {
   auth: Auth;
   variables: KeyValue[];
   description: string;
+  timeoutMs?: number | null;
+  redirectLimit?: number | null;
+  tlsVerify?: boolean | null;
+  caCertPath?: string | null;
 }
 
 export interface EnvironmentFile {

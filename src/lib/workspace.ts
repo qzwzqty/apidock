@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, type AppSession, type TeamInfo, type ProjectInfo, type OpenTab, type WorkspaceState } from "./api";
+import { api, type AppSession, type TeamInfo, type ProjectInfo, type OpenTab, type WorkspaceState, type ProxyConfig } from "./api";
 import { useProject } from "./project";
 
 export const MAIN_TAB_ID = "main";
@@ -24,6 +24,7 @@ interface WorkspaceStore {
   projects: ProjectInfo[];
   openTabs: OpenTab[];
   activeTab: string;
+  proxy: ProxyConfig;
   bootstrapped: boolean;
   error: string | null;
 
@@ -40,6 +41,7 @@ interface WorkspaceStore {
   openProject: (teamKey: string, projectKey: string) => void;
   closeTab: (id: string) => void;
   setActiveTab: (id: string) => void;
+  saveProxy: (proxy: ProxyConfig) => Promise<void>;
 }
 
 export const useWorkspace = create<WorkspaceStore>()((set, get) => ({
@@ -49,6 +51,7 @@ export const useWorkspace = create<WorkspaceStore>()((set, get) => ({
   projects: [],
   openTabs: [],
   activeTab: MAIN_TAB_ID,
+  proxy: { enabled: false, kind: "system", url: "" },
   bootstrapped: false,
   error: null,
 
@@ -84,6 +87,7 @@ export const useWorkspace = create<WorkspaceStore>()((set, get) => ({
       selectedTeamKey: firstTeam,
       openTabs: tabs,
       activeTab: hasActive ? session.workspace.activeTab! : MAIN_TAB_ID,
+      proxy: session.workspace.proxy ?? { enabled: false, kind: "system", url: "" },
     });
     if (firstTeam) {
       void get().refreshTeam(firstTeam);
@@ -151,7 +155,7 @@ export const useWorkspace = create<WorkspaceStore>()((set, get) => ({
     const exists = openTabs.some((t) => tabId(t) === id);
     const nextTabs = exists ? openTabs : [...openTabs, { teamKey, projectKey }];
     set({ openTabs: nextTabs, activeTab: id });
-    void persistTabs(nextTabs, id);
+    void persistTabs(nextTabs, id, get().proxy);
   },
 
   closeTab: (id) => {
@@ -165,16 +169,21 @@ export const useWorkspace = create<WorkspaceStore>()((set, get) => ({
     }
     set({ openTabs: nextTabs, activeTab: nextActive });
     useProject.getState().dropProject(id);
-    void persistTabs(nextTabs, nextActive);
+    void persistTabs(nextTabs, nextActive, get().proxy);
   },
 
   setActiveTab: (id) => {
     set({ activeTab: id });
-    void persistTabs(get().openTabs, id);
+    void persistTabs(get().openTabs, id, get().proxy);
+  },
+saveProxy: async (proxy) => {
+    set({ proxy });
+    const state: WorkspaceState = { version: 1, openTabs: get().openTabs, activeTab: get().activeTab, proxy };
+    await api.saveWorkspace(state);
   },
 }));
 
-function persistTabs(openTabs: OpenTab[], activeTab: string) {
-  const state: WorkspaceState = { version: 1, openTabs, activeTab };
+function persistTabs(openTabs: OpenTab[], activeTab: string, proxy: ProxyConfig) {
+  const state: WorkspaceState = { version: 1, openTabs, activeTab, proxy };
   return api.saveWorkspace(state);
 }

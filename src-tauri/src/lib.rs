@@ -355,11 +355,16 @@ async fn send_request(
     let settings = storage::get_project_settings(&root, &team_key, &project_key).map_err(|e| {
         http::SendErrorInfo { kind: "http".into(), message: e }
     })?;
+    let opts = http::SendOptions {
+        proxy: storage::read_workspace(&root).proxy,
+        ..Default::default()
+    };
     http::send(
         &iface,
         &env,
         &settings.global_variables,
         &settings.global_params,
+        &opts,
     )
     .await
 }

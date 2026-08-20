@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Save, Send, Check } from "lucide-react";
+import { Save, Send, Check, SlidersHorizontal, RotateCcw } from "lucide-react";
 import type { InterfaceFile, KeyValue } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Dialog, DialogFooter } from "@/components/ui/dialog";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 
@@ -36,6 +37,7 @@ export function InterfaceEditor({
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [showOpts, setShowOpts] = useState(false);
 
   // 外部 doc 变化（切换接口/外部刷新）时同步
   const [lastDocId, setLastDocId] = useState(doc.id);
@@ -87,10 +89,24 @@ export function InterfaceEditor({
         <Button onClick={save} disabled={saving || (!dirty && !saved)} variant="outline">
           <Save className="h-4 w-4" /> 保存
         </Button>
+        <Button variant="ghost" title="发送选项（超时/重定向/TLS/CA）"
+          onClick={() => setShowOpts(true)}>
+          <SlidersHorizontal className="h-4 w-4" />
+        </Button>
         <Button onClick={() => onSend(base)} className="bg-green-600 hover:bg-green-500">
           <Send className="h-4 w-4" /> 发送
         </Button>
       </div>
+
+      <SendOptionsDialog
+        iface={base}
+        open={showOpts}
+        onClose={() => setShowOpts(false)}
+        onApply={(patch) => {
+          update(patch);
+          setShowOpts(false);
+        }}
+      />
 
       {/* 区块标签 */}
       <div className="flex h-9 shrink-0 items-center border-b border-border px-2 text-sm">
@@ -345,5 +361,66 @@ function AuthEditor({
         </div>
       )}
     </div>
+  );
+}
+function SendOptionsDialog({
+  iface,
+  open,
+  onClose,
+  onApply,
+}: {
+  iface: InterfaceFile;
+  open: boolean;
+  onClose: () => void;
+  onApply: (patch: Partial<InterfaceFile>) => void;
+}) {
+  const [t, setT] = useState(iface.timeoutMs == null ? "" : String(iface.timeoutMs / 1000));
+  const [r, setR] = useState(iface.redirectLimit == null ? "" : String(iface.redirectLimit));
+  const [tls, setTls] = useState(iface.tlsVerify == null ? "null" : String(iface.tlsVerify));
+  const [ca, setCa] = useState(iface.caCertPath ?? "");
+
+  const apply = () => {
+    const timeoutMs = t.trim() === "" ? null : Math.max(1, Math.floor(Number(t) * 1000));
+    const redirectLimit = r.trim() === "" ? null : Math.max(0, Math.floor(Number(r)));
+    const tlsVerify = tls === "null" ? null : tls === "true";
+    const caCertPath = ca.trim() === "" ? null : ca.trim();
+    onApply({ timeoutMs, redirectLimit, tlsVerify, caCertPath });
+  };
+
+  return (
+    <Dialog open={open} onClose={onClose} title="发送选项（保存后随接口生效）">
+      <div className="space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">超时（秒，留空=默认 30s）</label>
+            <Input value={t} type="number" min={1} onChange={(e) => setT(e.target.value)} />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">最大重定向（0=不跟随，留空=默认 10）</label>
+            <Input value={r} type="number" min={0} onChange={(e) => setR(e.target.value)} />
+          </div>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-muted-foreground">TLS 证书校验</label>
+          <select className="h-8 w-full rounded-md border border-border bg-muted px-2 text-sm outline-none cursor-pointer"
+            value={tls} onChange={(e) => setTls(e.target.value)}>
+            <option value="null">默认（校验）</option>
+            <option value="true">强制校验</option>
+            <option value="false">跳过校验（有风险，慎用）</option>
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-muted-foreground">自定义 CA 证书路径（PEM，留空=无）</label>
+          <Input value={ca} onChange={(e) => setCa(e.target.value)} placeholder="C:\certs\ca.pem" />
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => { setT(""); setR(""); setTls("null"); setCa(""); }}>
+            <RotateCcw className="h-3.5 w-3.5" /> 恢复默认
+          </Button>
+          <Button variant="outline" onClick={onClose}>取消</Button>
+          <Button onClick={apply}>确定</Button>
+        </DialogFooter>
+      </div>
+    </Dialog>
   );
 }

@@ -5,6 +5,10 @@
       "label": "vite:dev",
       "type": "shell",
       "command": "npm run dev",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "shell": { "executable": "cmd.exe", "args": ["/d", "/c"] }
+      },
       "isBackground": true,
       "problemMatcher": {
         "owner": "vite",
@@ -20,7 +24,10 @@
       "label": "cargo:build-debug",
       "type": "shell",
       "command": "cargo build",
-      "options": { "cwd": "${workspaceFolder}/src-tauri" },
+      "options": {
+        "cwd": "${workspaceFolder}/src-tauri",
+        "shell": { "executable": "cmd.exe", "args": ["/d", "/c"] }
+      },
       "group": "build",
       "problemMatcher": ["$rustc"]
     },
@@ -34,6 +41,10 @@
       "label": "tauri:dev",
       "type": "shell",
       "command": "npm run tauri dev",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "shell": { "executable": "cmd.exe", "args": ["/d", "/c"] }
+      },
       "isBackground": true,
       "problemMatcher": {
         "owner": "tauri",

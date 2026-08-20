@@ -769,6 +769,12 @@ pub fn run() {
             }
             Ok(())
         })
+        .on_page_load(|webview, payload| {
+            // 窗口初始为隐藏；首屏加载完成后再显示，避免启动白屏
+            if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                let _ = webview.window().show();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

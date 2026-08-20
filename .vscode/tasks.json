@@ -1,0 +1,50 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "vite:dev",
+      "type": "shell",
+      "command": "npm run dev",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite",
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "http://localhost:1420"
+        }
+      }
+    },
+    {
+      "label": "cargo:build-debug",
+      "type": "shell",
+      "command": "cargo build",
+      "options": { "cwd": "${workspaceFolder}/src-tauri" },
+      "group": "build",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "tauri:debug",
+      "dependsOn": ["vite:dev", "cargo:build-debug"],
+      "dependsOrder": "sequence",
+      "description": "启动 vite 并编译 Rust 调试版（供 Rust 断点调试）"
+    },
+    {
+      "label": "tauri:dev",
+      "type": "shell",
+      "command": "npm run tauri dev",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "tauri",
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "http://localhost:1420"
+        }
+      },
+      "description": "完整启动应用（vite + 编译 + 拉起窗口），配合 Ctrl+F5/终端使用"
+    }
+  ]
+}

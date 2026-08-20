@@ -1,0 +1,25 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Apidock · Rust 主进程调试（CodeLLDB）",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/src-tauri/target/debug/apidock.exe",
+      "cwd": "${workspaceFolder}/src-tauri",
+      "preLaunchTask": "tauri:debug",
+      "sourceLanguages": ["rust"]
+    },
+    {
+      "name": "Apidock · Rust 主进程调试（MSVC）",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/src-tauri/target/debug/apidock.exe",
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}/src-tauri",
+      "environment": [],
+      "console": "externalTerminal",
+      "preLaunchTask": "tauri:debug"
+    }
+  ]
+}

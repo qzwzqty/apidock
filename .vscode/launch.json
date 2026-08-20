@@ -7,7 +7,7 @@
       "request": "launch",
       "program": "${workspaceFolder}/src-tauri/target/debug/apidock.exe",
       "cwd": "${workspaceFolder}/src-tauri",
-      "preLaunchTask": "tauri:debug",
+      "preLaunchTask": "tauri:prelaunch",
       "sourceLanguages": ["rust"]
     },
     {
@@ -19,7 +19,7 @@
       "cwd": "${workspaceFolder}/src-tauri",
       "environment": [],
       "console": "externalTerminal",
-      "preLaunchTask": "tauri:debug"
+      "preLaunchTask": "tauri:prelaunch"
     }
   ]
 }

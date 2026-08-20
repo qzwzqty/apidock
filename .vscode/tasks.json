@@ -32,10 +32,27 @@
       "problemMatcher": ["$rustc"]
     },
     {
-      "label": "tauri:debug",
-      "dependsOn": ["vite:dev", "cargo:build-debug"],
-      "dependsOrder": "sequence",
-      "description": "启动 vite 并编译 Rust 调试版（供 Rust 断点调试）"
+      "label": "tauri:prelaunch",
+      "type": "shell",
+      "command": "${workspaceFolder}\\.vscode\\tauri-prelaunch.cmd",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "shell": { "executable": "cmd.exe", "args": ["/d", "/c"] }
+      },
+      "isBackground": true,
+      "presentation": {
+        "closeOnExit": true
+      },
+      "problemMatcher": {
+        "owner": "tauri",
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "http://localhost:1420"
+        }
+      },
+      "detail": "调试前置任务：编译 Rust 调试版并启动 vite；内置监视脚本，调试停止/程序关闭后自动清理 vite"
     },
     {
       "label": "tauri:dev",
@@ -55,7 +72,7 @@
           "endsPattern": "http://localhost:1420"
         }
       },
-      "description": "完整启动应用（vite + 编译 + 拉起窗口），配合 Ctrl+F5/终端使用"
+      "detail": "完整启动应用（vite + 编译 + 拉起窗口），配合 Ctrl+F5/终端使用"
     }
   ]
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { Upload, Download, Loader2, Check, AlertTriangle } from "lucide-react";
 import type { ImportReport } from "@/lib/api";
@@ -11,20 +11,31 @@ export function ImportExportDialog({
   teamKey,
   projectKey,
   open,
+  initialMode = "import",
   onClose,
   onImported,
 }: {
   teamKey: string;
   projectKey: string;
   open: boolean;
+  initialMode?: "import" | "export";
   onClose: () => void;
   onImported: () => void;
 }) {
   const teams = useWorkspace((s) => s.teams);
-  const [mode, setMode] = useState<"import" | "export">("import");
+  const [mode, setMode] = useState<"import" | "export">(initialMode);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [result, setResult] = useState<{ title: string; report?: ImportReport; warnings?: string[] } | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setMode(initialMode);
+      setBusy(false);
+      setErr("");
+      setResult(null);
+    }
+  }, [open, initialMode]);
 
   const pickFile = (): Promise<string | null> =>
     openDialog({ multiple: false, filters: [{ name: "规范文件", extensions: ["json", "yaml", "yml"] }] });

@@ -224,7 +224,7 @@ export const api = {
   saveInterface: (teamKey: string, projectKey: string, groupPath: string[], ifaceKey: string, iface: InterfaceFile) =>
     invoke<void>("save_interface", { teamKey, projectKey, groupPath, ifaceKey, iface }),
   renameInterface: (teamKey: string, projectKey: string, groupPath: string[], ifaceKey: string, newName: string) =>
-    invoke<void>("rename_interface", { teamKey, projectKey, groupPath, ifaceKey, newName }),
+    invoke<string>("rename_interface", { teamKey, projectKey, groupPath, ifaceKey, newName }),
   deleteInterface: (teamKey: string, projectKey: string, groupPath: string[], ifaceKey: string) =>
     invoke<void>("delete_interface", { teamKey, projectKey, groupPath, ifaceKey }),
 

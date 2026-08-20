@@ -143,15 +143,20 @@ export const useProject = create<ProjectStore>()((set, get) => ({
   },
 
   renameInterface: async (tabId, teamKey, projectKey, groupPath, key, name) => {
-    await api.renameInterface(teamKey, projectKey, groupPath, key, name);
+    const newKey = await api.renameInterface(teamKey, projectKey, groupPath, key, name);
     set((s) => {
       const st = s.states[tabId];
       if (!st) return {};
-      const id = ifaceId(groupPath, key);
-      const openTabs = st.openTabs.map((t) => (t.id === id ? { ...t, name } : t));
+      const oldId = ifaceId(groupPath, key);
+      const newId = ifaceId(groupPath, newKey);
+      const openTabs = st.openTabs.map((t) => (t.id === oldId ? { ...t, id: newId, key: newKey, name } : t));
       const docs = { ...st.docs };
-      if (docs[id]) docs[id] = { ...docs[id], name };
-      return { states: { ...s.states, [tabId]: { ...st, openTabs, docs } } };
+      if (docs[oldId]) {
+        docs[newId] = { ...docs[oldId], name };
+        delete docs[oldId];
+      }
+      const activeTab = st.activeTab === oldId ? newId : st.activeTab;
+      return { states: { ...s.states, [tabId]: { ...st, openTabs, docs, activeTab } } };
     });
     await get().loadTree(tabId, teamKey, projectKey);
   },

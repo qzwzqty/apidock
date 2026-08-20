@@ -302,18 +302,19 @@ fn create_interface(
     description: Option<String>,
 ) -> Result<CreatedInterface, String> {
     let root = with_root(&state)?;
+    let name = storage::validate_name(&name)?;
     let keys = dir_keys(&storage::list_interface_tree(&root, &team_key, &project_key), &group_path);
-    let exists = move |k: &str| keys.contains(&k.to_string());
-    let key = storage::generate_key(&name, exists);
-    let name = if name.trim().is_empty() { key.clone() } else { name };
-    let mut iface = storage::create_interface(&root, &team_key, &project_key, &group_path, &key, &name)?;
+    if keys.contains(&name) {
+        return Err("已存在同名分组/接口".into());
+    }
+    let mut iface = storage::create_interface(&root, &team_key, &project_key, &group_path, &name, &name)?;
     if let Some(desc) = description {
         if !desc.trim().is_empty() {
             iface.description = desc.trim().to_string();
-            storage::save_interface(&root, &team_key, &project_key, &group_path, &key, &iface)?;
+            storage::save_interface(&root, &team_key, &project_key, &group_path, &name, &iface)?;
         }
     }
-    Ok(CreatedInterface { key, file: iface })
+    Ok(CreatedInterface { key: name, file: iface })
 }
 
 #[tauri::command]
@@ -349,9 +350,17 @@ fn rename_interface(
     group_path: Vec<String>,
     iface_key: String,
     new_name: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let root = with_root(&state)?;
-    storage::rename_interface(&root, &team_key, &project_key, &group_path, &iface_key, &new_name)
+    let new_name = storage::validate_name(&new_name)?;
+    if new_name != iface_key {
+        let keys = dir_keys(&storage::list_interface_tree(&root, &team_key, &project_key), &group_path);
+        if keys.iter().any(|k| k == &new_name) {
+            return Err("已存在同名分组/接口".into());
+        }
+    }
+    storage::rename_interface(&root, &team_key, &project_key, &group_path, &iface_key, &new_name)?;
+    Ok(new_name)
 }
 
 #[tauri::command]
@@ -558,10 +567,30 @@ async fn import_spec_new_project(
         "postman" => imports::parse_postman(&content)?,
         _ => imports::parse_openapi(&content, is_yaml)?,
     };
-    let project_key = storage::sanitize_key(&name);
-    let project_key = if project_key.is_empty() { format!("imported-{}", uuid::Uuid::new_v4()) } else { project_key };
+    let project_key = match storage::validate_name(&name) {
+        Ok(k) => k,
+        Err(_) => {
+            let replaced: String = name
+                .trim()
+                .chars()
+                .map(|c| {
+                    if c <= '\u{1f}' || matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                        '-'
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            let replaced = replaced.trim_end_matches(|c| c == '.' || c == '-' || c == ' ').to_string();
+            if replaced.is_empty() {
+                format!("imported-{}", uuid::Uuid::new_v4())
+            } else {
+                replaced
+            }
+        }
+    };
     if storage::list_projects(&root, &team_key).iter().any(|p| p.key == project_key) {
-        return Err(format!("已存在同名项目键 {project_key}，请改为导入到现有项目"));
+        return Err(format!("已存在同名项目 {project_key}，请改为导入到现有项目"));
     }
     storage::create_project(&root, &team_key, &project_key, &name)?;
     let report = imports::import_into_project(&root, &team_key, &project_key, &ifaces)?;

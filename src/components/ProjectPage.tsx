@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { FolderPlus, FilePlus2, X, Settings2, ChevronDown, FileText, Loader2, Play, Import } from "lucide-react";
+import { FolderPlus, FilePlus2, MoreVertical, Upload, Download, X, Settings2, ChevronDown, FileText, Loader2, Play, Import } from "lucide-react";
 import { InterfaceTree, PromptDialog, type IfaceRef } from "@/components/InterfaceTree";
 import { InterfaceEditor } from "@/components/InterfaceEditor";
 import { ResponseView } from "@/components/ResponseView";
@@ -17,6 +17,7 @@ type DlgState =
   | { kind: "createGroup"; parentPath: string[] }
   | { kind: "createIface"; groupPath: string[] }
   | { kind: "renameGroup"; ref: IfaceRef }
+  | { kind: "renameIface"; ref: IfaceRef }
   | { kind: "moveIface"; ref: IfaceRef; exclude?: string[] | null }
   | { kind: "moveGroup"; ref: IfaceRef; exclude?: string[] | null }
   | null;
@@ -26,7 +27,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
   const proj = useProject((s) => s.states[tabId]);
   const {
     loadTree, openInterface, closeInterface, setActive, createGroup, renameGroup, deleteGroup,
-    createInterface, deleteInterface, saveDoc,
+    createInterface, renameInterface, deleteInterface, saveDoc,
   } = useProject.getState();
 
   const [dlg, setDlg] = useState<DlgState>(null);
@@ -43,6 +44,24 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
     open: false,
   });
   const [showImportExport, setShowImportExport] = useState(false);
+  const [importExportMode, setImportExportMode] = useState<"import" | "export">("import");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const openImportExport = (mode: "import" | "export") => {
+    setImportExportMode(mode);
+    setShowImportExport(true);
+    setMenuOpen(false);
+  };
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [menuOpen]);
 
   const loadEnvs = async () => {
     const [list, settings] = await Promise.all([
@@ -103,21 +122,49 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
       <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-muted">
         <div className="flex items-center justify-between px-3 py-2">
           <span className="text-sm font-semibold text-foreground">接口</span>
-          <div className="flex items-center gap-1">
+          <div className="relative" ref={menuRef}>
             <button
               className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground cursor-pointer"
-              title="在根级新建分组"
-              onClick={() => setDlg({ kind: "createGroup", parentPath: [] })}
+              title="更多操作（新建 / 导入 / 导出）"
+              onClick={() => setMenuOpen((v) => !v)}
             >
-              <FolderPlus className="h-4 w-4" />
+              <MoreVertical className="h-4 w-4" />
             </button>
-            <button
-              className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground cursor-pointer"
-              title="在根级新建接口"
-              onClick={() => setDlg({ kind: "createIface", groupPath: [] })}
-            >
-              <FilePlus2 className="h-4 w-4" />
-            </button>
+            {menuOpen && (
+              <div className="absolute right-0 top-8 z-50 w-40 overflow-hidden rounded-md border border-border bg-muted shadow-xl">
+                <button
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer"
+                  onClick={() => {
+                    setDlg({ kind: "createIface", groupPath: [] });
+                    setMenuOpen(false);
+                  }}
+                >
+                  <FilePlus2 className="h-4 w-4" /> 新建接口
+                </button>
+                <button
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer"
+                  onClick={() => {
+                    setDlg({ kind: "createGroup", parentPath: [] });
+                    setMenuOpen(false);
+                  }}
+                >
+                  <FolderPlus className="h-4 w-4" /> 新建目录
+                </button>
+                <div className="my-1 h-px bg-border" />
+                <button
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer"
+                  onClick={() => openImportExport("import")}
+                >
+                  <Upload className="h-4 w-4" /> 导入
+                </button>
+                <button
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer"
+                  onClick={() => openImportExport("export")}
+                >
+                  <Download className="h-4 w-4" /> 导出
+                </button>
+              </div>
+            )}
           </div>
         </div>
         <div className="flex-1 overflow-y-auto px-2 pb-2">
@@ -136,6 +183,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
                 }
               }}
               onCreateIface={(groupPath) => setDlg({ kind: "createIface", groupPath })}
+              onRenameIface={(ref) => setDlg({ kind: "renameIface", ref })}
               onDeleteIface={(ref) => {
                 if (confirm(`删除接口「${ref.key}」？此操作不可恢复。`)) {
                   void deleteInterface(tabId, teamKey, projectKey, ref.groupPath, ref.key);
@@ -163,7 +211,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
           </button>
           <button
             className="flex h-full cursor-pointer items-center gap-1.5 px-3 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            onClick={() => setShowImportExport(true)}
+            onClick={() => openImportExport("import")}
             title="OpenAPI / Postman 导入导出"
           >
             <Import className="h-3.5 w-3.5" /> 导入/导出
@@ -270,10 +318,22 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
         <PromptDialog
           open
           title="新建接口"
-          nameLabel="接口名"
+          nameLabel="接口名（将作为文件名）"
           description
           onClose={() => setDlg(null)}
           onSubmit={(name, description) => createInterface(tabId, teamKey, projectKey, dlg.groupPath, name, description)}
+        />
+      )}
+      {dlg?.kind === "renameIface" && (
+        <PromptDialog
+          open
+          title="重命名接口"
+          nameLabel="接口名（将作为文件名）"
+          mode="rename"
+          extraName={dlg.ref.key}
+          onClose={() => setDlg(null)}
+          onSubmit={(name) => renameInterface(tabId, teamKey, projectKey, dlg.ref.groupPath, dlg.ref.key, name)}
+          confirmText="重命名"
         />
       )}
       {dlg?.kind === "renameGroup" && (
@@ -344,6 +404,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
         teamKey={teamKey}
         projectKey={projectKey}
         open={showImportExport}
+        initialMode={importExportMode}
         onClose={() => setShowImportExport(false)}
         onImported={async () => {
           setRunState((s) => ({ ...s, open: false }));

@@ -36,6 +36,79 @@ fn sanitize(value: &str) -> String {
     crate::storage::sanitize_key(value)
 }
 
+/// 由 JSON Schema 生成示例值（规范未提供 example 时，用于填充请求体）
+fn schema_example(schema: &Value, components: &Value) -> Value {
+    if let Some(r) = schema.get("$ref").and_then(|v| v.as_str()) {
+        let path = format!("/{}", r.strip_prefix("#/").unwrap_or(r));
+        if let Some(target) = components.pointer(&path) {
+            return schema_example(target, components);
+        }
+        return Value::Null;
+    }
+    if let Some(ex) = schema.get("example").or_else(|| schema.get("default")) {
+        return ex.clone();
+    }
+    if let Some(enum_v) = schema.get("enum").and_then(|e| e.as_array()).and_then(|a| a.first()) {
+        return enum_v.clone();
+    }
+    // allOf：合并各子表的示例
+    if let Some(all) = schema.get("allOf").and_then(|a| a.as_array()) {
+        if let Some(first) = all.first() {
+            let v = schema_example(first, components);
+            if let Value::Object(mut obj) = v {
+                for sub in all.iter().skip(1) {
+                    if let Value::Object(sub_obj) = schema_example(sub, components) {
+                        for (k, vv) in sub_obj {
+                            obj.insert(k, vv);
+                        }
+                    }
+                }
+                return Value::Object(obj);
+            }
+            return v;
+        }
+    }
+    if let Some(one) = schema.get("oneOf").or_else(|| schema.get("anyOf")) {
+        if let Some(first) = one.as_array().and_then(|a| a.first()) {
+            return schema_example(first, components);
+        }
+    }
+    let t = schema.get("type").and_then(|v| v.as_str()).or_else(|| {
+        schema
+            .get("type")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str())
+    });
+    match t {
+        Some("object") => {
+            let mut obj = serde_json::Map::new();
+            if let Some(ps) = schema.get("properties").and_then(|p| p.as_object()) {
+                for (k, pschema) in ps {
+                    obj.insert(k.clone(), schema_example(pschema, components));
+                }
+            } else if let Some(extra) = schema.get("additionalProperties") {
+                if !extra.is_null() {
+                    obj.insert("key".into(), schema_example(extra, components));
+                }
+            }
+            Value::Object(obj)
+        }
+        Some("array") => {
+            if let Some(items) = schema.get("items") {
+                Value::Array(vec![schema_example(items, components)])
+            } else {
+                Value::Array(Vec::new())
+            }
+        }
+        Some("string") => Value::String(String::new()),
+        Some("integer") | Some("number") => Value::Number(0.into()),
+        Some("boolean") => Value::Bool(false),
+        Some("null") => Value::Null,
+        _ => Value::Null,
+    }
+}
+
 /// 解析 OpenAPI 3.x（JSON 或 YAML）→ 待导入接口列表
 pub fn parse_openapi(content: &str, is_yaml: bool) -> Result<(String, Vec<ImportedIface>), String> {
     let doc: Value = if is_yaml {
@@ -119,16 +192,8 @@ pub fn parse_openapi(content: &str, is_yaml: bool) -> Result<(String, Vec<Import
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let raw_key = op
-                    .get("operationId")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&name);
-                let key = sanitize(raw_key);
-                let key = if key.is_empty() {
-                    sanitize(&format!("{method}-{path}"))
-                } else {
-                    key
-                };
+                // 文件名 = 名称（由规范中的 summary/operationId 决定），写入时再做合法性处理
+                let key = name.clone();
 
                 let mut headers = Vec::new();
                 let mut query = Vec::new();
@@ -179,7 +244,11 @@ pub fn parse_openapi(content: &str, is_yaml: bool) -> Result<(String, Vec<Import
                                     .and_then(|x| x.get("value"))
                                     .cloned()
                             })
-                            .or_else(|| json_media.get("schema").cloned());
+                            .or_else(|| {
+                                json_media
+                                    .get("schema")
+                                    .map(|s| schema_example(s, &doc))
+                            });
                         let content_str = match example {
                             Some(v) => serde_json::to_string_pretty(&v).map_err(|_| "序列化示例失败").unwrap_or("{}".into()),
                             None => "{}".into(),
@@ -370,12 +439,7 @@ fn walk_postman_items(items: &Value, base: Vec<String>) -> Vec<ImportedIface> {
                         _ => {}
                     }
                 }
-                let key = sanitize(&item_name);
-                let key = if key.is_empty() {
-                    sanitize(&format!("{method}-{}", base.len()))
-                } else {
-                    key
-                };
+                let key = item_name.clone();
                 out.push(ImportedIface {
                     group_path: base.clone(),
                     key,
@@ -424,6 +488,30 @@ fn extract_postman_url(req: &Value) -> (String, Vec<storage::KeyValue>) {
     (base, query)
 }
 
+/// 用户输入/规范中的名称直接作为接口文件名：合法则原样使用，否则把非法字符替换为 `-`
+fn import_name(raw: &str) -> String {
+    if let Ok(n) = crate::storage::validate_name(raw) {
+        return n;
+    }
+    let replaced: String = raw
+        .trim()
+        .chars()
+        .map(|c| {
+            if c <= '\u{1f}' || matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let replaced = replaced.trim_end_matches(|c| c == '.' || c == '-' || c == ' ').to_string();
+    if replaced.is_empty() {
+        "导入接口".into()
+    } else {
+        replaced
+    }
+}
+
 /// 把待导入接口写入目标项目
 pub fn import_into_project(
     root: &Path,
@@ -432,7 +520,8 @@ pub fn import_into_project(
     ifaces: &[ImportedIface],
 ) -> Result<ImportReport, String> {
     let mut report = ImportReport::default();
-    let mut used_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut used_names: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
 
     for iface in ifaces {
         let mut path = Vec::new();
@@ -444,19 +533,24 @@ pub fn import_into_project(
     }
 
     for iface in ifaces {
-        let mut final_key = iface.key.clone();
+        let dir = iface.group_path.join("/");
+        let name = import_name(&iface.name);
+        let mut final_name = name.clone();
         let mut n = 1;
-        while !used_keys.insert(final_key.clone()) {
+        while !used_names.entry(dir.clone()).or_default().insert(final_name.clone()) {
             n += 1;
-            final_key = format!("{}-{n}", iface.key);
+            final_name = format!("{name}-{n}");
         }
-        if let Err(e) = storage::create_interface(root, team_key, project_key, &iface.group_path, &final_key, &iface.name) {
+        if final_name != name {
+            report.warnings.push(format!("接口名称 {name} 在本目录重复，已重命名为 {final_name}"));
+        }
+        if let Err(e) = storage::create_interface(root, team_key, project_key, &iface.group_path, &final_name, &final_name) {
             report.skipped += 1;
-            report.warnings.push(format!("接口 {} 创建失败：{e}", iface.key));
+            report.warnings.push(format!("接口 {name} 创建失败：{e}"));
             continue;
         }
         let mut f = iface.to_file();
-        f.name = iface.name.clone();
+        f.name = final_name.clone();
         f.method = iface.method.clone();
         f.url = iface.url.clone();
         f.headers = iface.headers.clone();
@@ -464,11 +558,11 @@ pub fn import_into_project(
         f.body = iface.body.clone();
         f.auth = iface.auth.clone();
         f.description = iface.description.clone();
-        match storage::save_interface(root, team_key, project_key, &iface.group_path, &final_key, &f) {
+        match storage::save_interface(root, team_key, project_key, &iface.group_path, &final_name, &f) {
             Ok(_) => report.total += 1,
             Err(e) => {
                 report.skipped += 1;
-                report.warnings.push(format!("接口 {final_key} 写入失败：{e}"));
+                report.warnings.push(format!("接口 {final_name} 写入失败：{e}"));
             }
         }
     }
@@ -643,15 +737,104 @@ mod tests {
         let (name, list) = parse_openapi(SPEC, false).unwrap();
         assert_eq!(name, "用户服务");
         assert_eq!(list.len(), 2);
-        let get = list.iter().find(|i| i.key == "listusers").unwrap();
+        let get = list.iter().find(|i| i.name == "用户列表").unwrap();
+        assert_eq!(get.key, "用户列表");
         assert_eq!(get.method, "GET");
         assert_eq!(get.url, "https://api.example.com/v1/users");
         assert_eq!(get.group_path, vec!["users".to_string()]);
         assert_eq!(get.auth.kind, "bearer");
         assert_eq!(get.query[0].key, "page");
-        let post = list.iter().find(|i| i.key == "createuser").unwrap();
+        let post = list.iter().find(|i| i.key == "createUser").unwrap();
         assert_eq!(post.body.mode, "json");
         assert!(post.body.content.contains("name"));
+    }
+
+    #[test]
+    fn openapi_schema_becomes_example_body() {
+        let spec = r##"{
+  "openapi": "3.0.3",
+  "info": { "title": "t", "version": "1" },
+  "components": { "schemas": { "Card": { "type": "object", "properties": { "id": { "type": "integer" }, "ok": { "type": "boolean", "default": true } }, "required": ["id"] } } },
+  "paths": {
+    "/cmd": {
+      "post": {
+        "summary": "下发",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Card" } } } } },
+        "responses": {}
+      }
+    }
+  }
+}"##;
+        let (_, list) = parse_openapi(spec, false).unwrap();
+        let content = &list[0].body.content;
+        // 生成的是示例值，而不是 schema 结构
+        assert!(content.contains("id"));
+        assert!(content.contains("ok"));
+        assert!(!content.contains("required"));
+        assert!(!content.contains("$ref"));
+        let v: Value = serde_json::from_str(content).unwrap();
+        assert_eq!(v[0]["id"], 0);
+        assert_eq!(v[0]["ok"], true);
+    }
+
+    #[test]
+    fn import_names_files_by_display_name() {
+        let root = std::env::temp_dir().join(format!("apidock-imp-name-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        storage::ensure_root(&root).unwrap();
+        storage::create_team(&root, "ops", "运维").unwrap();
+        storage::create_project(&root, "ops", "默认模块", "默认模块").unwrap();
+        let spec = r#"{
+  "openapi": "3.0.3",
+  "info": { "title": "默认模块", "version": "1.0" },
+  "paths": {
+    "/api/iot/command-v2": {
+      "post": {
+        "summary": "数据下发V2",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "array", "items": { "type": "object", "properties": { "command_type": { "type": "string" }, "payload": { "type": "object", "properties": {} }, "count": { "type": "integer" } }, "required": ["command_type", "payload"] } } } } },
+        "responses": {}
+      }
+    }
+  }
+}"#;
+        let (_, list) = parse_openapi(spec, false).unwrap();
+        let report = import_into_project(&root, "ops", "默认模块", &list).unwrap();
+        assert_eq!(report.total, 1);
+        // 文件名 = 名称（中文）
+        let path = crate::storage::interface_file(&root, "ops", "默认模块", &[], "数据下发V2");
+        assert!(path.exists(), "期望文件 {} 存在", path.display());
+        let f = storage::get_interface(&root, "ops", "默认模块", &[], "数据下发V2").unwrap();
+        assert_eq!(f.name, "数据下发V2");
+        // 请求体为示例值而非 schema
+        let v: Value = serde_json::from_str(&f.body.content).unwrap();
+        assert_eq!(v[0]["command_type"], "");
+        assert_eq!(v[0]["count"], 0);
+        assert!(v[0].as_object().unwrap().contains_key("payload"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn import_renames_duplicate_names_in_same_dir() {
+        let root = std::env::temp_dir().join(format!("apidock-imp-dup-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        storage::ensure_root(&root).unwrap();
+        storage::create_team(&root, "ops", "运维").unwrap();
+        storage::create_project(&root, "ops", "p", "P").unwrap();
+        let spec = r#"{
+  "openapi": "3.0.3",
+  "info": { "title": "t", "version": "1" },
+  "paths": {
+    "/a": { "get": { "summary": "同名词条", "responses": {} } },
+    "/b": { "get": { "summary": "同名词条", "responses": {} } }
+  }
+}"#;
+        let (_, list) = parse_openapi(spec, false).unwrap();
+        let report = import_into_project(&root, "ops", "p", &list).unwrap();
+        assert_eq!(report.total, 2);
+        assert!(report.warnings.iter().any(|w| w.contains("同名词条")));
+        assert!(crate::storage::interface_file(&root, "ops", "p", &[], "同名词条").exists());
+        assert!(crate::storage::interface_file(&root, "ops", "p", &[], "同名词条-2").exists());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

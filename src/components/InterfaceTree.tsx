@@ -19,6 +19,7 @@ export function InterfaceTree({
   onRenameGroup,
   onDeleteGroup,
   onCreateIface,
+  onRenameIface,
   onDeleteIface,
   onRunGroup,
   onMoveIface,
@@ -31,6 +32,7 @@ export function InterfaceTree({
   onRenameGroup: (ref: IfaceRef) => void;
   onDeleteGroup: (ref: IfaceRef) => void;
   onCreateIface: (groupPath: string[]) => void;
+  onRenameIface: (ref: IfaceRef) => void;
   onDeleteIface: (ref: IfaceRef) => void;
   onRunGroup?: (groupPath: string[]) => void;
   onMoveIface?: (ref: IfaceRef) => void;
@@ -40,7 +42,7 @@ export function InterfaceTree({
     <div className="select-none">
       {tree.length === 0 && (
         <p className="px-2 py-3 text-xs text-muted-foreground">
-          还没有接口，点击上方按钮新建分组或接口
+          还没有接口，点击上方「更多」菜单新建分组或接口
         </p>
       )}
       {tree.map((node) => (
@@ -55,6 +57,7 @@ export function InterfaceTree({
           onRenameGroup={onRenameGroup}
           onDeleteGroup={onDeleteGroup}
           onCreateIface={onCreateIface}
+          onRenameIface={onRenameIface}
           onDeleteIface={onDeleteIface}
           onRunGroup={onRunGroup}
           onMoveIface={onMoveIface}
@@ -75,6 +78,7 @@ function Node({
   onRenameGroup,
   onDeleteGroup,
   onCreateIface,
+  onRenameIface,
   onDeleteIface,
   onRunGroup,
   onMoveIface,
@@ -89,6 +93,7 @@ function Node({
   onRenameGroup: (ref: IfaceRef) => void;
   onDeleteGroup: (ref: IfaceRef) => void;
   onCreateIface: (groupPath: string[]) => void;
+  onRenameIface: (ref: IfaceRef) => void;
   onDeleteIface: (ref: IfaceRef) => void;
   onRunGroup?: (groupPath: string[]) => void;
   onMoveIface?: (ref: IfaceRef) => void;
@@ -109,11 +114,21 @@ function Node({
         style={{ paddingLeft: depth * 14 + 7 }}
         onClick={() => onOpenIface({ groupPath: path, key: node.key })}
       >
-        <span className={cn("w-3 text-[10px]", node.method.startsWith("G") ? "text-green-500" : "text-orange-400")}>
+        <span className={cn("w-10 shrink-0 truncate text-[10px]", node.method.startsWith("G") ? "text-green-500" : "text-orange-400")}>
           {node.method}
         </span>
-        <span className="truncate">{node.name}</span>
-        <span className="ml-auto shrink-0 opacity-0 transition-opacity group-hover:opacity-100">
+        <span className="min-w-0 truncate">{node.name}</span>
+        <span className="ml-auto flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100">
+          <button
+            className="rounded p-0.5 hover:bg-border cursor-pointer"
+            title="重命名接口"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRenameIface({ groupPath: path, key: node.key });
+            }}
+          >
+            <Pencil className="h-3 w-3" />
+          </button>
           {onMoveIface && (
             <button
               className="rounded p-0.5 hover:bg-border cursor-pointer"
@@ -153,7 +168,7 @@ function Node({
           {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
         </span>
         <Folder className="h-3.5 w-3.5 shrink-0 text-yellow-500/80" />
-        <span className="truncate">{node.name}</span>
+        <span className="min-w-0 truncate">{node.name}</span>
         <span className="ml-auto flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100">
           {onRunGroup && (
             <button
@@ -235,6 +250,7 @@ function Node({
               onRenameGroup={onRenameGroup}
               onDeleteGroup={onDeleteGroup}
               onCreateIface={onCreateIface}
+              onRenameIface={onRenameIface}
               onDeleteIface={onDeleteIface}
               onRunGroup={onRunGroup}
               onMoveIface={onMoveIface}

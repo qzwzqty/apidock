@@ -525,7 +525,7 @@ fn group_dir_at(
     dir
 }
 
-fn interface_file(
+pub(crate) fn interface_file(
     root: &Path,
     team_key: &str,
     project_key: &str,
@@ -620,26 +620,6 @@ pub fn validate_name(raw: &str) -> Result<String, String> {
         return Err("该名称为系统保留名，请更换".into());
     }
     Ok(name.to_string())
-}
-
-/// 由显示名自动生成英文键（仅接口文件使用）：可转写则用转写，否则随机短 id；冲突自动追加序号
-pub fn generate_key<F: FnMut(&str) -> bool>(display: &str, mut exists: F) -> String {
-    let base = sanitize_key(display);
-    let base = if base.is_empty() {
-        format!("item-{}", &uuid::Uuid::new_v4().simple().to_string()[..6])
-    } else {
-        base
-    };
-    if !exists(&base) {
-        return base;
-    }
-    let mut n = 1;
-    let mut key = format!("{base}-{n}");
-    while exists(&key) {
-        n += 1;
-        key = format!("{base}-{n}");
-    }
-    key
 }
 
 pub fn create_group(
@@ -785,7 +765,7 @@ pub fn save_interface(
     atomic_write(&path, &text).map_err(|e| e.to_string())
 }
 
-/// 重命名接口：仅改 name 字段，不动磁盘文件名
+/// 重命名接口：文件名与 name 字段一起更新（文件名 = 名称）
 pub fn rename_interface(
     root: &Path,
     team_key: &str,
@@ -794,9 +774,25 @@ pub fn rename_interface(
     iface_key: &str,
     new_name: &str,
 ) -> Result<(), String> {
-    let mut iface = get_interface(root, team_key, project_key, group_path, iface_key)?;
-    iface.name = new_name.to_string();
-    save_interface(root, team_key, project_key, group_path, iface_key, &iface)
+    let new_name = validate_name(new_name)?;
+    let parent = group_dir_at(root, team_key, project_key, group_path);
+    if !parent.is_dir() {
+        return Err("分组不存在".into());
+    }
+    if new_name != iface_key {
+        let old_path = parent.join(format!("{iface_key}{INTERFACE_FILE_SUFFIX}"));
+        if !old_path.exists() {
+            return Err(format!("接口 {iface_key} 不存在"));
+        }
+        let new_path = parent.join(format!("{new_name}{INTERFACE_FILE_SUFFIX}"));
+        if new_path.exists() {
+            return Err(format!("已存在同名接口 {new_name}"));
+        }
+        fs::rename(&old_path, &new_path).map_err(|e| e.to_string())?;
+    }
+    let mut iface = get_interface(root, team_key, project_key, group_path, &new_name)?;
+    iface.name = new_name.clone();
+    save_interface(root, team_key, project_key, group_path, &new_name, &iface)
 }
 
 pub fn delete_interface(
@@ -1179,20 +1175,6 @@ mod tests {
     }
 
     #[test]
-    fn generate_key_uniq_and_fallback() {
-        // 英文名转写 + 冲突避让
-        let mut used = std::collections::HashSet::new();
-        used.insert("order-api".to_string());
-        assert_eq!(generate_key("Order API", |k| used.contains(k)), "order-api-1");
-        used.insert("order-api-1".to_string());
-        assert_eq!(generate_key("Order API", |k| used.contains(k)), "order-api-2");
-        // 中文名 → 随机前缀
-        let k = generate_key("检索接口", |_| false);
-        assert!(k.starts_with("item-"));
-        assert!(!k.is_empty());
-    }
-
-    #[test]
     fn strip_jsonc_handles_comments_and_trailing_comma() {
         let src = r#"{
   // 行注释
@@ -1340,13 +1322,18 @@ mod tests {
         assert_eq!(got.method, "POST");
         assert_eq!(got.url, "/ping");
 
-        // 保存 / 重命名
+        // 保存 / 重命名（文件名与名称同步更新）
         let mut doc = got.clone();
         doc.description = "说明".into();
         save_interface(&root, "ops", "user-api", &[], "health", &doc).unwrap();
         rename_interface(&root, "ops", "user-api", &[], "health", "健康检查v2").unwrap();
-        assert_eq!(get_interface(&root, "ops", "user-api", &[], "health").unwrap().name, "健康检查v2");
-        assert!(interface_file(&root, "ops", "user-api", &[], "health").exists());
+        assert_eq!(get_interface(&root, "ops", "user-api", &[], "健康检查v2").unwrap().name, "健康检查v2");
+        assert!(interface_file(&root, "ops", "user-api", &[], "健康检查v2").exists());
+        assert!(!interface_file(&root, "ops", "user-api", &[], "health").exists());
+        // 重命名冲突：同目录已存在同名接口
+        create_interface(&root, "ops", "user-api", &[], "health", "健康检查").unwrap();
+        assert!(rename_interface(&root, "ops", "user-api", &[], "health", "健康检查v2").is_err());
+        assert!(rename_interface(&root, "ops", "user-api", &[], "health", "脏/名").is_err());
 
         // 重命名分组（目录名 = 新名称）
         rename_group(&root, "ops", "user-api", &["auth".to_string()], "鉴权v2").unwrap();
@@ -1354,6 +1341,7 @@ mod tests {
         assert!(!group_dir_at(&root, "ops", "user-api", &["auth".to_string()]).is_dir());
 
         // 删除
+        delete_interface(&root, "ops", "user-api", &[], "健康检查v2").unwrap();
         delete_interface(&root, "ops", "user-api", &[], "health").unwrap();
         delete_group(&root, "ops", "user-api", &["鉴权v2".to_string()]).unwrap();
         assert!(list_interface_tree(&root, "ops", "user-api").is_empty());

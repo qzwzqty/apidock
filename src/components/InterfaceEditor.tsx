@@ -586,7 +586,7 @@ function JsonFieldRow({
             <option key={t} value={t}>{t}</option>
           ))}
         </select>
-        <label className="flex w-14 shrink-0 items-center justify-center" title="是否必填">
+        <label className="flex w-6 shrink-0 items-center justify-center" title="是否必填">
           <input
             type="checkbox"
             className="h-3.5 w-3.5 cursor-pointer accent-(--ring)"

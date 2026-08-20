@@ -4,14 +4,15 @@
 
 ## 快速开始
 
-> 进展：M0 工程骨架、M1 接口/分组树 CRUD、M2 接口测试（环境/变量 + 发送 + 响应预览）已完成。
+> 目前已完成：M0 工程骨架、M1 接口树 CRUD、M2 接口测试（环境/变量/发送/响应）、断言与一键运行、OpenAPI/Postman 互操作、发送选项与代理、团队/项目重命名与移动、Markdown 说明、Cookie 会话、NSIS 打包。
 
 1. 阅读 [需求文档](docs/requirements.md) —— 功能和验收范围
 2. 阅读 [技术方案](docs/tech-plan.md) —— 技术栈与模块设计
 3. 阅读 [决策记录](docs/adr/) —— 关键选型及理由
 4. 词汇表见 [CONTEXT.md](CONTEXT.md)
 5. 开发运行：`npm install`，然后 `npm run tauri dev`
-6. 测试：`cargo test`（src-tauri 下，11 个单测 + HTTP 端到端）
+6. 测试：`cargo test`（src-tauri 下，18 个单测 + HTTP 端到端 + 导入导出往返）
+7. 打包：`npm run tauri build` → `src-tauri/target/release/bundle/nsis/Apidock_x.x.x_x64-setup.exe`
 
 ## 仓库结构
 

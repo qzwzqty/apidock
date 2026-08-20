@@ -118,6 +118,16 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
     setRunState({ running: false, report, open: true });
   };
 
+  /** 复制接口（同分组，名称后接 -copy） */
+  const copyIface = async (ref: IfaceRef) => {
+    try {
+      await api.copyInterface(teamKey, projectKey, ref.groupPath, ref.key);
+      await useProject.getState().loadTree(tabId, teamKey, projectKey);
+    } catch (e) {
+      alert(`复制失败：${e}`);
+    }
+  };
+
   /** 导出单个接口为 OpenAPI 3.0 JSON */
   const exportIface = async (ref: IfaceRef) => {
     const path = await save({
@@ -209,6 +219,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
               onMoveIface={(ref) => setDlg({ kind: "moveIface", ref, exclude: ref.groupPath })}
               onMoveGroup={(ref) => setDlg({ kind: "moveGroup", ref, exclude: ref.groupPath })}
               onExportIface={(ref) => void exportIface(ref)}
+              onCopyIface={(ref) => void copyIface(ref)}
             />
           )}
         </div>

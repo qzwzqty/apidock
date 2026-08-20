@@ -317,6 +317,49 @@ fn create_interface(
     Ok(CreatedInterface { key: name, file: iface })
 }
 
+/// 复制接口到同分组：内容完全一致，名称 = 原名后接 -copy（已存在则 -copy-2 / -copy-3 …），新 id
+#[tauri::command]
+fn copy_interface(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    iface_key: String,
+) -> Result<CreatedInterface, String> {
+    let root = with_root(&state)?;
+    let src = storage::get_interface(&root, &team_key, &project_key, &group_path, &iface_key)?;
+    let keys = dir_keys(&storage::list_interface_tree(&root, &team_key, &project_key), &group_path);
+    let key = unique_copy_key(&iface_key, &keys);
+    let created = storage::create_interface(&root, &team_key, &project_key, &group_path, &key, &key)?;
+    let mut doc = src;
+    doc.id = created.id;
+    doc.name = created.name;
+    storage::save_interface(&root, &team_key, &project_key, &group_path, &key, &doc)?;
+    Ok(CreatedInterface { key, file: doc })
+}
+
+/// 复制后的键名：原名后接 -copy；本身已是副本（-copy 或 -copy-N）时以其原始名为基础
+fn unique_copy_key(iface_key: &str, keys: &[String]) -> String {
+    let stem = if let Some(k) = iface_key.strip_suffix("-copy") {
+        k.to_string()
+    } else if let Some(idx) = iface_key.rfind("-copy-") {
+        if iface_key[idx + 6..].chars().all(|c| c.is_ascii_digit()) {
+            iface_key[..idx].to_string()
+        } else {
+            iface_key.to_string()
+        }
+    } else {
+        iface_key.to_string()
+    };
+    let mut key = format!("{stem}-copy");
+    let mut n = 1;
+    while keys.iter().any(|k| k == &key) {
+        n += 1;
+        key = format!("{stem}-copy-{n}");
+    }
+    key
+}
+
 #[tauri::command]
 fn get_interface(
     state: State<'_, AppState>,
@@ -744,6 +787,7 @@ pub fn run() {
             rename_group,
             delete_group,
             create_interface,
+            copy_interface,
             get_interface,
             save_interface,
             rename_interface,

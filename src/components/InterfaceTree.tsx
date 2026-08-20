@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, ChevronRight, FolderPlus, FilePlus2, Pencil, Trash2, Folder, Play, MoveRight, MoreVertical, Download } from "lucide-react";
+import { ChevronDown, ChevronRight, FolderPlus, FilePlus2, Pencil, Trash2, Folder, Play, MoveRight, MoreVertical, Download, Copy } from "lucide-react";
 import type { TreeNode } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,7 @@ export function InterfaceTree({
   onMoveIface,
   onMoveGroup,
   onExportIface,
+  onCopyIface,
 }: {
   tree: TreeNode[];
   activeId: string | null;
@@ -39,6 +40,7 @@ export function InterfaceTree({
   onMoveIface?: (ref: IfaceRef) => void;
   onMoveGroup?: (ref: IfaceRef) => void;
   onExportIface?: (ref: IfaceRef) => void;
+  onCopyIface?: (ref: IfaceRef) => void;
 }) {
   return (
     <div className="select-none">
@@ -65,6 +67,7 @@ export function InterfaceTree({
           onMoveIface={onMoveIface}
           onMoveGroup={onMoveGroup}
           onExportIface={onExportIface}
+          onCopyIface={onCopyIface}
         />
       ))}
     </div>
@@ -87,6 +90,7 @@ function Node({
   onMoveIface,
   onMoveGroup,
   onExportIface,
+  onCopyIface,
 }: {
   node: TreeNode;
   path: string[];
@@ -103,6 +107,7 @@ function Node({
   onMoveIface?: (ref: IfaceRef) => void;
   onMoveGroup?: (ref: IfaceRef) => void;
   onExportIface?: (ref: IfaceRef) => void;
+  onCopyIface?: (ref: IfaceRef) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -151,6 +156,9 @@ function Node({
         {menuOpen && (
           <div className="absolute right-1 top-7 z-50 w-40 overflow-hidden rounded-md border border-border bg-muted shadow-xl">
             <MenuItem icon={<Pencil className="h-3.5 w-3.5" />} label="编辑" onClick={() => { setMenuOpen(false); onRenameIface(ref); }} />
+            {onCopyIface && (
+              <MenuItem icon={<Copy className="h-3.5 w-3.5" />} label="复制" onClick={() => { setMenuOpen(false); onCopyIface(ref); }} />
+            )}
             {onMoveIface && (
               <MenuItem icon={<MoveRight className="h-3.5 w-3.5" />} label="移动" onClick={() => { setMenuOpen(false); onMoveIface(ref); }} />
             )}
@@ -265,6 +273,7 @@ function Node({
               onMoveIface={onMoveIface}
               onMoveGroup={onMoveGroup}
               onExportIface={onExportIface}
+              onCopyIface={onCopyIface}
             />
           ))}
         </div>

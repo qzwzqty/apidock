@@ -318,6 +318,8 @@ export const api = {
     invoke<void>("delete_group", { teamKey, projectKey, groupPath }),
   createInterface: (teamKey: string, projectKey: string, groupPath: string[], name: string, description?: string) =>
     invoke<CreatedInterface>("create_interface", { teamKey, projectKey, groupPath, name, description: description ?? null }),
+  copyInterface: (teamKey: string, projectKey: string, groupPath: string[], ifaceKey: string) =>
+    invoke<CreatedInterface>("copy_interface", { teamKey, projectKey, groupPath, ifaceKey }),
   getInterface: (teamKey: string, projectKey: string, groupPath: string[], ifaceKey: string) =>
     invoke<InterfaceFile>("get_interface", { teamKey, projectKey, groupPath, ifaceKey }),
   saveInterface: (teamKey: string, projectKey: string, groupPath: string[], ifaceKey: string, iface: InterfaceFile) =>

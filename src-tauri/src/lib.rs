@@ -2,18 +2,23 @@ mod storage;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::Mutex;
-use tauri::Manager;
+use std::sync::{Mutex, OnceLock};
+use tauri::{Emitter, Manager, State};
+use notify::Watcher;
 
-use storage::{ProjectInfo, TeamInfo, WorkspaceState};
+use storage::{InterfaceFile, ProjectInfo, TeamInfo, TreeNode, WorkspaceState};
+
+type WatchSender = std::sync::mpsc::Sender<notify::Result<notify::Event>>;
+static WATCHER_TX: OnceLock<WatchSender> = OnceLock::new();
 
 pub struct AppState {
     root: Mutex<Option<PathBuf>>,
+    watcher: Mutex<Option<notify::RecommendedWatcher>>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        Self { root: Mutex::new(None) }
+        Self { root: Mutex::new(None), watcher: Mutex::new(None) }
     }
 }
 
@@ -27,19 +32,21 @@ pub struct AppSession {
 }
 
 #[tauri::command]
-fn get_session(state: tauri::State<'_, AppState>) -> Result<AppSession, String> {
+fn get_session(state: State<'_, AppState>) -> Result<AppSession, String> {
     let root = restore_root(&state);
     build_session(root.as_deref())
 }
 
 #[tauri::command]
-fn set_data_root(state: tauri::State<'_, AppState>, path: String) -> Result<AppSession, String> {
+fn set_data_root(state: State<'_, AppState>, path: String) -> Result<AppSession, String> {
     let root = PathBuf::from(path);
     storage::ensure_root(&root).map_err(|e| e.to_string())?;
     persist_root(&state, &root)?;
-    let mut guard = state.root.lock().unwrap();
-    *guard = Some(root.clone());
-    drop(guard);
+    {
+        let mut guard = state.root.lock().unwrap();
+        *guard = Some(root.clone());
+    }
+    restart_watcher(&state, &root)?;
     build_session(Some(&root))
 }
 
@@ -112,11 +119,157 @@ fn delete_project(
 
 #[tauri::command]
 fn save_workspace(
-    state: tauri::State<'_, AppState>,
+    state: State<'_, AppState>,
     workspace: WorkspaceState,
 ) -> Result<(), String> {
     let root = with_root(&state)?;
     storage::write_workspace(&root, &workspace).map_err(|e| e.to_string())
+}
+
+// ----- 接口 / 分组树 -----
+
+#[tauri::command]
+fn list_interface_tree(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+) -> Result<Vec<TreeNode>, String> {
+    let root = with_root(&state)?;
+    Ok(storage::list_interface_tree(&root, &team_key, &project_key))
+}
+
+#[tauri::command]
+fn create_group(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    key: String,
+    name: String,
+) -> Result<(), String> {
+    let root = with_root(&state)?;
+    let key = storage::sanitize_key(&key);
+    if key.is_empty() {
+        return Err("分组键不能为空".into());
+    }
+    let name = if name.trim().is_empty() { key.clone() } else { name };
+    storage::create_group(&root, &team_key, &project_key, &group_path, &key, &name)
+}
+
+#[tauri::command]
+fn rename_group(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    new_key: String,
+    new_name: String,
+) -> Result<(), String> {
+    let root = with_root(&state)?;
+    let new_key = storage::sanitize_key(&new_key);
+    if new_key.is_empty() {
+        return Err("分组键不能为空".into());
+    }
+    storage::rename_group(&root, &team_key, &project_key, &group_path, &new_key, &new_name)
+}
+
+#[tauri::command]
+fn delete_group(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+) -> Result<(), String> {
+    let root = with_root(&state)?;
+    storage::delete_group(&root, &team_key, &project_key, &group_path)
+}
+
+#[tauri::command]
+fn create_interface(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    key: String,
+    name: String,
+) -> Result<InterfaceFile, String> {
+    let root = with_root(&state)?;
+    let key = storage::sanitize_key(&key);
+    if key.is_empty() {
+        return Err("接口键不能为空".into());
+    }
+    storage::create_interface(&root, &team_key, &project_key, &group_path, &key, &name)
+}
+
+#[tauri::command]
+fn get_interface(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    iface_key: String,
+) -> Result<InterfaceFile, String> {
+    let root = with_root(&state)?;
+    storage::get_interface(&root, &team_key, &project_key, &group_path, &iface_key)
+}
+
+#[tauri::command]
+fn save_interface(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    iface_key: String,
+    iface: InterfaceFile,
+) -> Result<(), String> {
+    let root = with_root(&state)?;
+    storage::save_interface(&root, &team_key, &project_key, &group_path, &iface_key, &iface)
+}
+
+#[tauri::command]
+fn rename_interface(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    iface_key: String,
+    new_name: String,
+) -> Result<(), String> {
+    let root = with_root(&state)?;
+    storage::rename_interface(&root, &team_key, &project_key, &group_path, &iface_key, &new_name)
+}
+
+#[tauri::command]
+fn delete_interface(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    iface_key: String,
+) -> Result<(), String> {
+    let root = with_root(&state)?;
+    storage::delete_interface(&root, &team_key, &project_key, &group_path, &iface_key)
+}
+
+fn restart_watcher(state: &AppState, root: &PathBuf) -> Result<(), String> {
+    let mut guard = state.watcher.lock().unwrap();
+    *guard = Some(start_watcher(root)?);
+    Ok(())
+}
+
+fn start_watcher(root: &PathBuf) -> Result<notify::RecommendedWatcher, String> {
+    let sender = WATCHER_TX
+        .get()
+        .ok_or("watcher channel not ready")?
+        .clone();
+    let mut watcher = notify::recommended_watcher(move |res| {
+        let _ = sender.send(res);
+    })
+    .map_err(|e| e.to_string())?;
+    watcher
+        .watch(root, notify::RecursiveMode::Recursive)
+        .map_err(|e| e.to_string())?;
+    Ok(watcher)
 }
 
 fn build_session(root: Option<&std::path::Path>) -> Result<AppSession, String> {
@@ -182,6 +335,9 @@ fn persist_root(_state: &AppState, root: &PathBuf) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let (tx, rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
+    let _ = WATCHER_TX.set(tx);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -197,11 +353,41 @@ pub fn run() {
             delete_team,
             delete_project,
             save_workspace,
+            list_interface_tree,
+            create_group,
+            rename_group,
+            delete_group,
+            create_interface,
+            get_interface,
+            save_interface,
+            rename_interface,
+            delete_interface,
         ])
-        .setup(|app| {
-            // 启动即恢复上次的数据根目录
+        .setup(move |app| {
+            // 文件变更去抖后 emit，供前端刷新
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let mut pending = false;
+                loop {
+                    match rx.recv_timeout(std::time::Duration::from_millis(300)) {
+                        Ok(Ok(_evt)) => pending = true,
+                        Ok(Err(_)) => {}
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            if pending {
+                                let _ = handle.emit("fs://changed", ());
+                                pending = false;
+                            }
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+            });
+
+            // 启动即恢复上次的数据根目录并开始文件监听
             let state = app.state::<AppState>();
-            let _ = restore_root(&state);
+            if let Some(root) = restore_root(&state) {
+                let _ = restart_watcher(&state, &root);
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

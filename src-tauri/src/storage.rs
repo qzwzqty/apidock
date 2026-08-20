@@ -301,7 +301,323 @@ pub fn create_project(root: &Path, team_key: &str, key: &str, name: &str) -> Res
     let meta = ProjectMeta { version: SCHEMA_VERSION, name: name.to_string() };
     let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
     atomic_write(&dir.join(PROJECT_FILE), &text).map_err(|e| e.to_string())?;
+    // 默认三套环境
+    for (file_key, env) in default_environments() {
+        let f = dir.join("environments").join(format!("{file_key}.json"));
+        if !f.exists() {
+            let e = serde_json::to_string_pretty(&env).map_err(|e| e.to_string())?;
+            atomic_write(&f, &e).map_err(|e| e.to_string())?;
+        }
+    }
     Ok(ProjectInfo { key: key.to_string(), name: name.to_string() })
+}
+
+// ----- 分组 / 接口树 -----
+
+const GROUP_FILE: &str = "group.json";
+const INTERFACE_FILE_SUFFIX: &str = ".json";
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct KeyValue {
+    pub key: String,
+    pub value: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct InterfaceFile {
+    pub version: u32,
+    pub id: String,
+    pub name: String,
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<KeyValue>,
+    pub query: Vec<KeyValue>,
+    pub description: String,
+}
+
+impl InterfaceFile {
+    pub fn new(key: &str) -> Self {
+        Self {
+            version: SCHEMA_VERSION,
+            id: uuid::Uuid::new_v4().to_string(),
+            name: key.to_string(),
+            method: "GET".into(),
+            url: String::new(),
+            headers: Vec::new(),
+            query: Vec::new(),
+            description: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum TreeNode {
+    #[serde(rename_all = "camelCase")]
+    Group { key: String, name: String, children: Vec<TreeNode> },
+    #[serde(rename_all = "camelCase")]
+    Interface { key: String, name: String, method: String },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GroupMeta {
+    version: u32,
+    name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentFile {
+    pub version: u32,
+    pub id: String,
+    pub name: String,
+    pub host: String,
+    pub builtin: bool,
+    pub variables: Vec<KeyValue>,
+}
+
+fn default_environments() -> Vec<(&'static str, EnvironmentFile)> {
+    vec![
+        ("prod", EnvironmentFile { version: SCHEMA_VERSION, id: "env-prod".to_string(), name: "正式环境".to_string(), host: String::new(), builtin: true, variables: Vec::new() }),
+        ("test", EnvironmentFile { version: SCHEMA_VERSION, id: "env-test".to_string(), name: "测试环境".to_string(), host: String::new(), builtin: true, variables: Vec::new() }),
+        ("dev", EnvironmentFile { version: SCHEMA_VERSION, id: "env-dev".to_string(), name: "开发环境".to_string(), host: String::new(), builtin: true, variables: Vec::new() }),
+    ]
+}
+
+fn project_api_dir(root: &Path, team_key: &str, project_key: &str) -> PathBuf {
+    project_dir(root, team_key, project_key).join("api")
+}
+
+fn group_dir_at(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    group_path: &[String],
+) -> PathBuf {
+    let mut dir = project_api_dir(root, team_key, project_key);
+    for seg in group_path {
+        dir = dir.join(seg);
+    }
+    dir
+}
+
+fn interface_file(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    group_path: &[String],
+    iface_key: &str,
+) -> PathBuf {
+    group_dir_at(root, team_key, project_key, group_path).join(format!(
+        "{iface_key}{INTERFACE_FILE_SUFFIX}"
+    ))
+}
+
+fn read_interface(root: &Path, team_key: &str, project_key: &str, group_path: &[String], iface_key: &str) -> Option<InterfaceFile> {
+    read_json(&interface_file(root, team_key, project_key, group_path, iface_key))
+}
+
+/// 递归扫描接口树
+pub fn list_interface_tree(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+) -> Vec<TreeNode> {
+    let api_dir = project_api_dir(root, team_key, project_key);
+    scan_tree_dir(&api_dir)
+}
+
+fn scan_tree_dir(dir: &Path) -> Vec<TreeNode> {
+    let mut nodes = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return nodes;
+    };
+    let mut items: Vec<(String, PathBuf, bool)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || name.starts_with('~') {
+            continue;
+        }
+        let is_dir = path.is_dir();
+        let is_group_file = name == GROUP_FILE;
+        if is_dir || (!is_group_file && name.ends_with(INTERFACE_FILE_SUFFIX)) {
+            items.push((name, path, is_dir));
+        }
+    }
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+    for (name, path, is_dir) in items {
+        if is_dir {
+            let group_name = read_json::<GroupMeta>(&path.join(GROUP_FILE))
+                .map(|m| m.name)
+                .unwrap_or_else(|| name.clone());
+            nodes.push(TreeNode::Group { key: name, name: group_name, children: scan_tree_dir(&path) });
+        } else {
+            let iface: InterfaceFile = read_json(&path)
+                .unwrap_or_else(|| InterfaceFile::new(&name.trim_end_matches(INTERFACE_FILE_SUFFIX)));
+            nodes.push(TreeNode::Interface { key: name.trim_end_matches(INTERFACE_FILE_SUFFIX).to_string(), name: iface.name, method: iface.method });
+        }
+    }
+    nodes
+}
+
+/// 分组：找到某 key 在 group_path 下的下一级目录路径（用于在指定分组下新建）
+fn project_api_exists(root: &Path, team_key: &str, project_key: &str) -> bool {
+    project_api_dir(root, team_key, project_key).is_dir()
+}
+
+pub fn create_group(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    group_path: &[String],
+    key: &str,
+    name: &str,
+) -> Result<(), String> {
+    if !project_api_exists(root, team_key, project_key) {
+        return Err(format!("项目 {project_key} 不存在"));
+    }
+    let parent = group_dir_at(root, team_key, project_key, group_path);
+    if !parent.is_dir() {
+        return Err("父分组不存在".into());
+    }
+    let dir = parent.join(key);
+    if dir.exists() {
+        return Err(format!("分组键 {key} 已存在"));
+    }
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let meta = GroupMeta { version: SCHEMA_VERSION, name: name.to_string() };
+    let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
+    atomic_write(&dir.join(GROUP_FILE), &text).map_err(|e| e.to_string())
+}
+
+pub fn rename_group(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    group_path: &[String],
+    new_key: &str,
+    new_name: &str,
+) -> Result<(), String> {
+    let dir = group_dir_at(root, team_key, project_key, group_path);
+    if !dir.is_dir() {
+        return Err("分组不存在".into());
+    }
+    if group_path.is_empty() {
+        return Err("不能重命名项目根".into());
+    }
+    let parent = dir.parent().map(Path::to_path_buf).unwrap_or_default();
+    if new_key != group_path.last().map(String::as_str).unwrap_or_default() {
+        let target = parent.join(new_key);
+        if target.exists() {
+            return Err(format!("分组键 {new_key} 已存在"));
+        }
+        fs::rename(&dir, &target).map_err(|e| e.to_string())?;
+    }
+    let meta = GroupMeta { version: SCHEMA_VERSION, name: new_name.to_string() };
+    let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
+    atomic_write(&parent.join(new_key).join(GROUP_FILE), &text).map_err(|e| e.to_string())
+}
+
+pub fn delete_group(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    group_path: &[String],
+) -> Result<(), String> {
+    let dir = group_dir_at(root, team_key, project_key, group_path);
+    if !dir.is_dir() {
+        return Err("分组不存在".into());
+    }
+    fs::remove_dir_all(&dir).map_err(|e| e.to_string())
+}
+
+pub fn create_interface(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    group_path: &[String],
+    key: &str,
+    name: &str,
+) -> Result<InterfaceFile, String> {
+    if !project_api_exists(root, team_key, project_key) {
+        return Err(format!("项目 {project_key} 不存在"));
+    }
+    let parent = group_dir_at(root, team_key, project_key, group_path);
+    if !parent.is_dir() {
+        return Err("分组不存在".into());
+    }
+    let path = parent.join(format!("{key}{INTERFACE_FILE_SUFFIX}"));
+    if path.exists() {
+        return Err(format!("接口键 {key} 已存在"));
+    }
+    let mut iface = InterfaceFile::new(key);
+    if !name.trim().is_empty() {
+        iface.name = name.to_string();
+    }
+    let text = serde_json::to_string_pretty(&iface).map_err(|e| e.to_string())?;
+    atomic_write(&path, &text).map_err(|e| e.to_string())?;
+    Ok(iface)
+}
+
+pub fn get_interface(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    group_path: &[String],
+    iface_key: &str,
+) -> Result<InterfaceFile, String> {
+    read_interface(root, team_key, project_key, group_path, iface_key)
+        .ok_or_else(|| format!("接口 {iface_key} 不存在"))
+}
+
+/// 保存整个接口定义（标准 JSON 写入）
+pub fn save_interface(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    group_path: &[String],
+    iface_key: &str,
+    iface: &InterfaceFile,
+) -> Result<(), String> {
+    let path = interface_file(root, team_key, project_key, group_path, iface_key);
+    if !path.exists() {
+        return Err(format!("接口 {iface_key} 不存在"));
+    }
+    let text = serde_json::to_string_pretty(iface).map_err(|e| e.to_string())?;
+    atomic_write(&path, &text).map_err(|e| e.to_string())
+}
+
+/// 重命名接口：仅改 name 字段，不动磁盘文件名
+pub fn rename_interface(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    group_path: &[String],
+    iface_key: &str,
+    new_name: &str,
+) -> Result<(), String> {
+    let mut iface = get_interface(root, team_key, project_key, group_path, iface_key)?;
+    iface.name = new_name.to_string();
+    save_interface(root, team_key, project_key, group_path, iface_key, &iface)
+}
+
+pub fn delete_interface(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    group_path: &[String],
+    iface_key: &str,
+) -> Result<(), String> {
+    let path = interface_file(root, team_key, project_key, group_path, iface_key);
+    if !path.exists() {
+        return Err(format!("接口 {iface_key} 不存在"));
+    }
+    fs::remove_file(&path).map_err(|e| e.to_string())
 }
 
 pub fn delete_team(root: &Path, team_key: &str) -> Result<(), String> {
@@ -336,6 +652,12 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn setup(root: &Path) {
+        ensure_root(root).unwrap();
+        create_team(root, "ops", "运维团队").unwrap();
+        create_project(root, "ops", "user-api", "用户中心").unwrap();
     }
 
     #[test]
@@ -377,10 +699,7 @@ mod tests {
         assert_eq!(list_projects(&root, "ops").len(), 1);
 
         // 带注释的手写 team.json 仍可被读取
-        let team_json = root
-            .join(MODULE_DIR)
-            .join("ops")
-            .join(TEAM_FILE);
+        let team_json = root.join(MODULE_DIR).join("ops").join(TEAM_FILE);
         std::fs::write(
             &team_json,
             r#"{
@@ -405,6 +724,92 @@ mod tests {
         delete_project(&root, "ops", "user-api").unwrap();
         delete_team(&root, "ops").unwrap();
         assert!(list_teams(&root).is_empty());
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn project_creates_default_environments() {
+        let root = temp_root();
+        setup(&root);
+        let env_dir = project_dir(&root, "ops", "user-api").join("environments");
+        assert!(env_dir.join("prod.json").exists());
+        assert!(env_dir.join("test.json").exists());
+        assert!(env_dir.join("dev.json").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn group_and_interface_tree_crud() {
+        let root = temp_root();
+        setup(&root);
+
+        // 建多级分组
+        create_group(&root, "ops", "user-api", &[], "auth", "鉴权").unwrap();
+        create_group(&root, "ops", "user-api", &["auth".to_string()], "login", "登录").unwrap();
+        assert!(create_group(&root, "ops", "user-api", &[], "auth", "x").is_err());
+
+        // 根级与分组级接口
+        let iface = create_interface(&root, "ops", "user-api", &[], "health", "健康检查").unwrap();
+        assert_eq!(iface.method, "GET");
+        assert_eq!(iface.name, "健康检查");
+        create_interface(&root, "ops", "user-api", &["auth".to_string(), "login".to_string()], "do-login", "登录接口").unwrap();
+        assert!(create_interface(&root, "ops", "user-api", &[], "health", "x").is_err());
+
+        // 树（按键字母序：auth 分组在前，health 接口在后）
+        let tree = list_interface_tree(&root, "ops", "user-api");
+        assert_eq!(tree.len(), 2);
+        match &tree[0] {
+            TreeNode::Group { key, name, children } => {
+                assert_eq!(key, "auth");
+                assert_eq!(name, "鉴权");
+                assert_eq!(children.len(), 1);
+                match &children[0] {
+                    TreeNode::Group { name, .. } => assert_eq!(name, "登录"),
+                    _ => panic!("expected login group"),
+                }
+            }
+            _ => panic!("expected auth group"),
+        }
+        assert!(matches!(&tree[1], TreeNode::Interface { key, .. } if key == "health"));
+
+        // 编辑（JSONC 宽容：给文件加注释仍可读）
+        let iface_path = interface_file(&root, "ops", "user-api", &[], "health");
+        std::fs::write(
+            &iface_path,
+            r#"{
+  "version": 1, /* 注释 */
+  "id": "x",
+  "name": "健康检查改",
+  "method": "POST",
+  "url": "/ping",
+  "headers": [], "query": [],
+  "description": "",
+}"#,
+        )
+        .unwrap();
+        let got = get_interface(&root, "ops", "user-api", &[], "health").unwrap();
+        assert_eq!(got.name, "健康检查改");
+        assert_eq!(got.method, "POST");
+        assert_eq!(got.url, "/ping");
+
+        // 保存 / 重命名
+        let mut doc = got.clone();
+        doc.description = "说明".into();
+        save_interface(&root, "ops", "user-api", &[], "health", &doc).unwrap();
+        rename_interface(&root, "ops", "user-api", &[], "health", "健康检查v2").unwrap();
+        assert_eq!(get_interface(&root, "ops", "user-api", &[], "health").unwrap().name, "健康检查v2");
+        assert!(interface_file(&root, "ops", "user-api", &[], "health").exists());
+
+        // 重命名分组（改键会移动目录）
+        rename_group(&root, "ops", "user-api", &["auth".to_string()], "auth2", "鉴权v2").unwrap();
+        assert!(group_dir_at(&root, "ops", "user-api", &["auth2".to_string()]).is_dir());
+        assert!(!group_dir_at(&root, "ops", "user-api", &["auth".to_string()]).is_dir());
+
+        // 删除
+        delete_interface(&root, "ops", "user-api", &[], "health").unwrap();
+        delete_group(&root, "ops", "user-api", &["auth2".to_string()]).unwrap();
+        assert!(list_interface_tree(&root, "ops", "user-api").is_empty());
 
         std::fs::remove_dir_all(&root).unwrap();
     }

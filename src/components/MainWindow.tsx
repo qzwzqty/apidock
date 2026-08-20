@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { Search, Plus, Folder, Trash2, Users } from "lucide-react";
 import type { TeamInfo } from "@/lib/api";
 import { useWorkspace, sanitizeKey } from "@/lib/workspace";
@@ -24,6 +25,19 @@ export function MainWindow() {
   const [projQ, setProjQ] = useState("");
   const [showTeamDlg, setShowTeamDlg] = useState(false);
   const [showProjDlg, setShowProjDlg] = useState(false);
+
+  // 外部变更自动刷新团队/项目
+  useEffect(() => {
+    let disposed = false;
+    const p = listen<string>("fs://changed", () => {
+      if (disposed) return;
+      void useWorkspace.getState().loadTeamsAndProjects();
+    });
+    return () => {
+      disposed = true;
+      void p.then((f) => f());
+    };
+  }, []);
 
   if (!dataRoot) {
     return (

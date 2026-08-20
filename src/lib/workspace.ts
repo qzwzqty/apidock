@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { api, type AppSession, type TeamInfo, type ProjectInfo, type OpenTab, type WorkspaceState } from "./api";
+import { useProject } from "./project";
 
 export const MAIN_TAB_ID = "main";
 
@@ -30,6 +31,7 @@ interface WorkspaceStore {
   pickDataRoot: () => Promise<void>;
   onSession: (session: AppSession) => void;
   refreshTeam: (teamKey: string) => Promise<void>;
+  loadTeamsAndProjects: () => Promise<void>;
   selectTeam: (teamKey: string) => Promise<void>;
   createTeam: (key: string, name: string) => Promise<void>;
   deleteTeam: (teamKey: string) => Promise<void>;
@@ -93,6 +95,16 @@ export const useWorkspace = create<WorkspaceStore>()((set, get) => ({
     set({ projects });
   },
 
+  loadTeamsAndProjects: async () => {
+    const teams = await api.listTeams();
+    const selected = get().selectedTeamKey;
+    let projects: ProjectInfo[] = [];
+    if (selected) {
+      projects = await api.listProjects(selected);
+    }
+    set({ teams, projects });
+  },
+
   selectTeam: async (teamKey) => {
     set({ selectedTeamKey: teamKey });
     await get().refreshTeam(teamKey);
@@ -152,6 +164,7 @@ export const useWorkspace = create<WorkspaceStore>()((set, get) => ({
       nextActive = nextTabs[idx] ? tabId(nextTabs[idx]) : nextTabs[idx - 1] ? tabId(nextTabs[idx - 1]) : MAIN_TAB_ID;
     }
     set({ openTabs: nextTabs, activeTab: nextActive });
+    useProject.getState().dropProject(id);
     void persistTabs(nextTabs, nextActive);
   },
 

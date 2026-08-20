@@ -1,4 +1,6 @@
+mod http;
 mod storage;
+mod variables;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -6,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use tauri::{Emitter, Manager, State};
 use notify::Watcher;
 
-use storage::{InterfaceFile, ProjectInfo, TeamInfo, TreeNode, WorkspaceState};
+use storage::{EnvironmentFile, InterfaceFile, ProjectInfo, ProjectSettings, TeamInfo, TreeNode, WorkspaceState};
 
 type WatchSender = std::sync::mpsc::Sender<notify::Result<notify::Event>>;
 static WATCHER_TX: OnceLock<WatchSender> = OnceLock::new();
@@ -251,6 +253,117 @@ fn delete_interface(
     storage::delete_interface(&root, &team_key, &project_key, &group_path, &iface_key)
 }
 
+// ----- 环境 / 项目设置 -----
+
+#[tauri::command]
+fn list_environments(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+) -> Result<Vec<storage::EnvironmentSummary>, String> {
+    let root = with_root(&state)?;
+    Ok(storage::list_environments(&root, &team_key, &project_key))
+}
+
+#[tauri::command]
+fn get_environment(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    env_id: String,
+) -> Result<EnvironmentFile, String> {
+    let root = with_root(&state)?;
+    storage::get_environment(&root, &team_key, &project_key, &env_id)
+}
+
+#[tauri::command]
+fn save_environment(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    env: EnvironmentFile,
+) -> Result<(), String> {
+    let root = with_root(&state)?;
+    storage::save_environment(&root, &team_key, &project_key, env)
+}
+
+#[tauri::command]
+fn delete_environment(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    env_id: String,
+) -> Result<(), String> {
+    let root = with_root(&state)?;
+    storage::delete_environment(&root, &team_key, &project_key, &env_id)
+}
+
+#[tauri::command]
+fn set_active_environment(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    env_id: String,
+) -> Result<(), String> {
+    let root = with_root(&state)?;
+    storage::set_active_environment(&root, &team_key, &project_key, &env_id)
+}
+
+#[tauri::command]
+fn get_project_settings(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+) -> Result<ProjectSettings, String> {
+    let root = with_root(&state)?;
+    storage::get_project_settings(&root, &team_key, &project_key)
+}
+
+#[tauri::command]
+fn save_project_settings(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    settings: ProjectSettings,
+) -> Result<(), String> {
+    let root = with_root(&state)?;
+    storage::save_project_settings(&root, &team_key, &project_key, settings)
+}
+
+// ----- 发送请求 -----
+
+#[tauri::command]
+async fn send_request(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    env_id: String,
+    iface: InterfaceFile,
+) -> Result<http::SendResponse, http::SendErrorInfo> {
+    let root = {
+        let guard = state.root.lock().unwrap();
+        guard
+            .clone()
+            .ok_or_else(|| http::SendErrorInfo {
+                kind: "http".into(),
+                message: "尚未选择数据根目录".into(),
+            })?
+    };
+    let env = storage::get_environment(&root, &team_key, &project_key, &env_id).map_err(|e| {
+        http::SendErrorInfo { kind: "http".into(), message: e }
+    })?;
+    let settings = storage::get_project_settings(&root, &team_key, &project_key).map_err(|e| {
+        http::SendErrorInfo { kind: "http".into(), message: e }
+    })?;
+    http::send(
+        &iface,
+        &env,
+        &settings.global_variables,
+        &settings.global_params,
+    )
+    .await
+}
+
 fn restart_watcher(state: &AppState, root: &PathBuf) -> Result<(), String> {
     let mut guard = state.watcher.lock().unwrap();
     *guard = Some(start_watcher(root)?);
@@ -362,6 +475,14 @@ pub fn run() {
             save_interface,
             rename_interface,
             delete_interface,
+            list_environments,
+            get_environment,
+            save_environment,
+            delete_environment,
+            set_active_environment,
+            get_project_settings,
+            save_project_settings,
+            send_request,
         ])
         .setup(move |app| {
             // 文件变更去抖后 emit，供前端刷新

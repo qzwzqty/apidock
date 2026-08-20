@@ -1,8 +1,12 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { FolderPlus, FilePlus2, X, ChevronDown, FileText } from "lucide-react";
+import { FolderPlus, FilePlus2, X, Settings2, ChevronDown, FileText, Loader2 } from "lucide-react";
 import { InterfaceTree, PromptDialog, type IfaceRef } from "@/components/InterfaceTree";
 import { InterfaceEditor } from "@/components/InterfaceEditor";
+import { ResponseView } from "@/components/ResponseView";
+import { EnvManager } from "@/components/EnvManager";
+import { ProjectSettingsDialog } from "@/components/ProjectSettingsDialog";
+import { api, type EnvironmentSummary, type SendOutcome } from "@/lib/api";
 import { useProject } from "@/lib/project";
 import { cn } from "@/lib/utils";
 
@@ -21,10 +25,27 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
   } = useProject.getState();
 
   const [dlg, setDlg] = useState<DlgState>(null);
+  const [envs, setEnvs] = useState<EnvironmentSummary[]>([]);
+  const [activeEnv, setActiveEnv] = useState<string>("env-prod");
+  const [showEnvMgr, setShowEnvMgr] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [sendState, setSendState] = useState<
+    { kind: "idle" } | { kind: "loading" } | { kind: "done"; outcome: SendOutcome }
+  >({ kind: "idle" });
+
+  const loadEnvs = async () => {
+    const [list, settings] = await Promise.all([
+      api.listEnvironments(teamKey, projectKey),
+      api.getProjectSettings(teamKey, projectKey),
+    ]);
+    setEnvs(list);
+    if (settings.activeEnvironmentId) setActiveEnv(settings.activeEnvironmentId);
+  };
 
   useEffect(() => {
     void loadTree(tabId, teamKey, projectKey);
-  }, [tabId, teamKey, projectKey, loadTree]);
+    void loadEnvs();
+  }, [tabId, teamKey, projectKey]);
 
   // 外部变更（git pull / 外部编辑器 / 其它实例）自动刷新
   useEffect(() => {
@@ -32,7 +53,9 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
     let unlisten: (() => void) | undefined;
     let promise: Promise<() => void> | undefined;
     void (promise = listen<string>("fs://changed", () => {
-      if (!disposed) void useProject.getState().loadTree(tabId, teamKey, projectKey);
+      if (disposed) return;
+      void useProject.getState().loadTree(tabId, teamKey, projectKey);
+      void loadEnvs();
     }));
     return () => {
       disposed = true;
@@ -43,6 +66,19 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
 
   const activeTabObj = proj?.openTabs.find((t) => t.id === proj.activeTab);
   const activeDoc = activeTabObj ? proj.docs[activeTabObj.id] : undefined;
+  const showResponse = sendState.kind === "done";
+  const activeEnvName = envs.find((e) => e.id === activeEnv)?.name ?? activeEnv;
+
+  const handleSend = async (doc: Parameters<typeof api.sendRequest>[3]) => {
+    setSendState({ kind: "loading" });
+    const outcome = await api.sendRequest(teamKey, projectKey, activeEnv, doc);
+    setSendState({ kind: "done", outcome });
+  };
+
+  const switchEnv = async (id: string) => {
+    await api.setActiveEnvironment(teamKey, projectKey, id);
+    setActiveEnv(id);
+  };
 
   return (
     <div className="flex h-full">
@@ -93,15 +129,35 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
         </div>
       </aside>
 
-      {/* 右侧：接口定义区 */}
+      {/* 右侧：接口定义 / 调试 */}
       <main className="flex min-w-0 flex-1 flex-col">
+        {/* 项目上下文行：项目定位 + 环境选择 + 项目设置 */}
         <div className="flex h-9 shrink-0 items-center border-b border-border text-sm">
-          <span className="px-4 text-muted-foreground">
-            {teamKey} / {projectKey}
-          </span>
-          <span className="ml-auto flex h-full items-center gap-2 pr-2 text-xs text-muted-foreground">
-            <ChevronDown className="h-3.5 w-3.5" /> 环境：正式环境
-          </span>
+          <span className="px-4 text-muted-foreground">{teamKey} / {projectKey}</span>
+          <button
+            className="ml-auto flex h-full cursor-pointer items-center gap-2 px-3 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            onClick={() => setShowEnvMgr(true)}
+            title="环境管理"
+          >
+            <select
+              className="cursor-pointer bg-transparent text-xs text-muted-foreground outline-none"
+              value={activeEnv}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => void switchEnv(e.target.value)}
+            >
+              {envs.map((e) => (
+                <option key={e.id} value={e.id}>{e.name}</option>
+              ))}
+            </select>
+            <ChevronDown className="h-3.5 w-3.5" />
+          </button>
+          <button
+            className="flex h-full cursor-pointer items-center px-3 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            onClick={() => setShowSettings(true)}
+            title="项目设置（全局变量/全局参数）"
+          >
+            <Settings2 className="h-3.5 w-3.5" />
+          </button>
         </div>
 
         {/* 接口子标签栏 */}
@@ -129,21 +185,38 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
             </div>
           ))}
           {!proj?.openTabs.length && (
-            <span className="self-center text-xs text-muted-foreground">左侧点击接口打开</span>
+            <span className="self-center px-3 text-xs text-muted-foreground">左侧点击接口打开</span>
+          )}
+          {sendState.kind === "loading" && (
+            <span className="ml-auto flex items-center gap-1.5 self-center pr-3 text-xs text-accent">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" /> 发送中…
+            </span>
           )}
         </div>
 
-        <div className="min-h-0 flex-1">
-          {activeTabObj && activeDoc ? (
-            <InterfaceEditor
-              doc={activeDoc}
-              onSave={(doc) => saveDoc(tabId, teamKey, projectKey, activeTabObj.groupPath, activeTabObj.key, doc)}
-            />
-          ) : (
-            <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
-              <FileText className="h-8 w-8 opacity-40" />
-              从左侧接口树选择接口进行定义
-              <span className="text-xs">调试（发送请求）与响应预览在 M2 实现</span>
+        {/* 编辑区 + 响应面板（分割） */}
+        <div className="flex min-h-0 flex-1">
+          <div className={cn("min-w-0", showResponse ? "w-3/5 border-r border-border" : "w-full")}>
+            {activeTabObj && activeDoc ? (
+              <InterfaceEditor
+                doc={activeDoc}
+                onSave={(doc) => saveDoc(tabId, teamKey, projectKey, activeTabObj.groupPath, activeTabObj.key, doc)}
+                onSend={(doc) => void handleSend(doc)}
+              />
+            ) : (
+              <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+                <FileText className="h-8 w-8 opacity-40" />
+                从左侧接口树选择接口进行定义
+                <span className="text-xs">当前环境：{activeEnvName}（{activeEnv}）</span>
+              </div>
+            )}
+          </div>
+          {showResponse && (
+            <div className="min-w-0 flex-1">
+              <ResponseView
+                outcome={sendState.outcome}
+                onClear={() => setSendState({ kind: "idle" })}
+              />
             </div>
           )}
         </div>
@@ -182,6 +255,24 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
           confirmText="重命名"
         />
       )}
+
+      <EnvManager
+        teamKey={teamKey}
+        projectKey={projectKey}
+        activeId={activeEnv}
+        open={showEnvMgr}
+        onClose={() => setShowEnvMgr(false)}
+        onChanged={(id) => {
+          setActiveEnv(id);
+          void loadEnvs();
+        }}
+      />
+      <ProjectSettingsDialog
+        teamKey={teamKey}
+        projectKey={projectKey}
+        open={showSettings}
+        onClose={() => setShowSettings(false)}
+      />
     </div>
   );
 }

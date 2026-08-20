@@ -62,6 +62,52 @@ struct TeamMeta {
 struct ProjectMeta {
     version: u32,
     name: String,
+    #[serde(default)]
+    active_environment_id: Option<String>,
+    #[serde(default)]
+    global_variables: Vec<KeyValue>,
+    #[serde(default)]
+    global_params: GlobalParams,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GlobalParams {
+    pub headers: Vec<KeyValue>,
+    pub cookies: Vec<KeyValue>,
+    pub query: Vec<KeyValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentFile {
+    pub version: u32,
+    pub id: String,
+    pub file: String,
+    pub name: String,
+    pub host: String,
+    pub builtin: bool,
+    pub variables: Vec<KeyValue>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentSummary {
+    pub id: String,
+    pub file: String,
+    pub name: String,
+    pub host: String,
+    pub builtin: bool,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSettings {
+    pub name: String,
+    pub active_environment_id: Option<String>,
+    pub global_variables: Vec<KeyValue>,
+    pub global_params: GlobalParams,
 }
 
 /// 把任意字符串洗成合法目录/文件键（小写字母、数字、连字符，无空格/特殊字符）
@@ -298,7 +344,13 @@ pub fn create_project(root: &Path, team_key: &str, key: &str, name: &str) -> Res
     }
     fs::create_dir_all(dir.join("api")).map_err(|e| e.to_string())?;
     fs::create_dir_all(dir.join("environments")).map_err(|e| e.to_string())?;
-    let meta = ProjectMeta { version: SCHEMA_VERSION, name: name.to_string() };
+    let meta = ProjectMeta {
+        version: SCHEMA_VERSION,
+        name: name.to_string(),
+        active_environment_id: Some("env-prod".into()),
+        global_variables: Vec::new(),
+        global_params: GlobalParams::default(),
+    };
     let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
     atomic_write(&dir.join(PROJECT_FILE), &text).map_err(|e| e.to_string())?;
     // 默认三套环境
@@ -327,6 +379,28 @@ pub struct KeyValue {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
+pub struct Body {
+    pub mode: String, // none | json | raw | urlencoded | form-data | file
+    pub content: String,
+    pub content_type: String,
+    pub form: Vec<KeyValue>,
+    pub file_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Auth {
+    pub kind: String, // none | bearer | basic | api-key
+    pub token: String,
+    pub username: String,
+    pub password: String,
+    pub api_key_name: String,
+    pub api_key_in: String, // header | query
+    pub api_key_value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct InterfaceFile {
     pub version: u32,
     pub id: String,
@@ -335,6 +409,9 @@ pub struct InterfaceFile {
     pub url: String,
     pub headers: Vec<KeyValue>,
     pub query: Vec<KeyValue>,
+    pub body: Body,
+    pub auth: Auth,
+    pub variables: Vec<KeyValue>,
     pub description: String,
 }
 
@@ -348,6 +425,9 @@ impl InterfaceFile {
             url: String::new(),
             headers: Vec::new(),
             query: Vec::new(),
+            body: Body::default(),
+            auth: Auth::default(),
+            variables: Vec::new(),
             description: String::new(),
         }
     }
@@ -369,22 +449,11 @@ struct GroupMeta {
     name: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EnvironmentFile {
-    pub version: u32,
-    pub id: String,
-    pub name: String,
-    pub host: String,
-    pub builtin: bool,
-    pub variables: Vec<KeyValue>,
-}
-
 fn default_environments() -> Vec<(&'static str, EnvironmentFile)> {
     vec![
-        ("prod", EnvironmentFile { version: SCHEMA_VERSION, id: "env-prod".to_string(), name: "正式环境".to_string(), host: String::new(), builtin: true, variables: Vec::new() }),
-        ("test", EnvironmentFile { version: SCHEMA_VERSION, id: "env-test".to_string(), name: "测试环境".to_string(), host: String::new(), builtin: true, variables: Vec::new() }),
-        ("dev", EnvironmentFile { version: SCHEMA_VERSION, id: "env-dev".to_string(), name: "开发环境".to_string(), host: String::new(), builtin: true, variables: Vec::new() }),
+        ("prod", EnvironmentFile { version: SCHEMA_VERSION, id: "env-prod".to_string(), file: "prod".to_string(), name: "正式环境".to_string(), host: String::new(), builtin: true, variables: Vec::new() }),
+        ("test", EnvironmentFile { version: SCHEMA_VERSION, id: "env-test".to_string(), file: "test".to_string(), name: "测试环境".to_string(), host: String::new(), builtin: true, variables: Vec::new() }),
+        ("dev", EnvironmentFile { version: SCHEMA_VERSION, id: "env-dev".to_string(), file: "dev".to_string(), name: "开发环境".to_string(), host: String::new(), builtin: true, variables: Vec::new() }),
     ]
 }
 
@@ -620,6 +689,190 @@ pub fn delete_interface(
     fs::remove_file(&path).map_err(|e| e.to_string())
 }
 
+// ----- 环境 / 项目设置 -----
+
+fn environments_dir(root: &Path, team_key: &str, project_key: &str) -> PathBuf {
+    project_dir(root, team_key, project_key).join("environments")
+}
+
+fn project_meta_file(root: &Path, team_key: &str, project_key: &str) -> PathBuf {
+    project_dir(root, team_key, project_key).join(PROJECT_FILE)
+}
+
+fn read_project_meta(root: &Path, team_key: &str, project_key: &str) -> Option<ProjectMeta> {
+    read_json(&project_meta_file(root, team_key, project_key))
+}
+
+fn write_project_meta(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    meta: &ProjectMeta,
+) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(meta).map_err(|e| e.to_string())?;
+    atomic_write(&project_meta_file(root, team_key, project_key), &text).map_err(|e| e.to_string())
+}
+
+/// 读取环境文件：按 id 匹配；找不到时也接受按文件名键匹配
+pub fn get_environment(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    env_id: &str,
+) -> Result<EnvironmentFile, String> {
+    let dir = environments_dir(root, team_key, project_key);
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Err(format!("环境 {env_id} 不存在"));
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || !path.extension().is_some_and(|e| e == "json") {
+            continue;
+        }
+        if let Some(env) = read_json::<EnvironmentFile>(&path) {
+            if env.id == env_id {
+                return Ok(env);
+            }
+        }
+        let stem = path.file_stem().unwrap().to_string_lossy();
+        if stem == env_id {
+            let stem = stem.into_owned();
+            let env = EnvironmentFile {
+                version: SCHEMA_VERSION,
+                id: env_id.to_string(),
+                file: stem.clone(),
+                name: stem,
+                host: String::new(),
+                builtin: false,
+                variables: Vec::new(),
+            };
+            return Ok(env);
+        }
+    }
+    Err(format!("环境 {env_id} 不存在"))
+}
+
+pub fn list_environments(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+) -> Vec<EnvironmentSummary> {
+    let active = read_project_meta(root, team_key, project_key)
+        .and_then(|m| m.active_environment_id);
+    let dir = environments_dir(root, team_key, project_key);
+    let mut list = Vec::new();
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return list;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || !path.extension().is_some_and(|e| e == "json") {
+            continue;
+        }
+        let file = path.file_stem().unwrap().to_string_lossy().into_owned();
+        if let Some(env) = read_json::<EnvironmentFile>(&path) {
+            let id = env.id;
+            let is_active = Some(id.clone()) == active;
+            list.push(EnvironmentSummary {
+                id,
+                file,
+                name: env.name,
+                host: env.host,
+                builtin: env.builtin,
+                active: is_active,
+            });
+        }
+    }
+    list.sort_by(|a, b| a.id.cmp(&b.id));
+    list
+}
+
+pub fn save_environment(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    env: EnvironmentFile,
+) -> Result<(), String> {
+    let dir = environments_dir(root, team_key, project_key);
+    let target = dir.join(format!("{}.json", env.file));
+    // 若被重命名到已存在的其它环境文件键，冲突时拒绝
+    if target.exists()
+        && read_json::<EnvironmentFile>(&target)
+            .map(|e| e.id != env.id)
+            .unwrap_or(false)
+    {
+        return Err(format!("环境文件键 {} 已被占用", env.file));
+    }
+    let text = serde_json::to_string_pretty(&env).map_err(|e| e.to_string())?;
+    atomic_write(&target, &text).map_err(|e| e.to_string())
+}
+
+pub fn delete_environment(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    env_id: &str,
+) -> Result<(), String> {
+    let dir = environments_dir(root, team_key, project_key);
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Err(format!("环境 {env_id} 不存在"));
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || !path.extension().is_some_and(|e| e == "json") {
+            continue;
+        }
+        if let Some(env) = read_json::<EnvironmentFile>(&path) {
+            if env.id == env_id {
+                if env.builtin {
+                    return Err("内置环境不可删除".into());
+                }
+                return fs::remove_file(&path).map_err(|e| e.to_string());
+            }
+        }
+    }
+    Err(format!("环境 {env_id} 不存在"))
+}
+
+pub fn set_active_environment(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    env_id: &str,
+) -> Result<(), String> {
+    get_environment(root, team_key, project_key, env_id)?;
+    let mut meta = read_project_meta(root, team_key, project_key).ok_or("项目不存在")?;
+    meta.active_environment_id = Some(env_id.to_string());
+    write_project_meta(root, team_key, project_key, &meta)
+}
+
+pub fn get_project_settings(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+) -> Result<ProjectSettings, String> {
+    let meta = read_project_meta(root, team_key, project_key).ok_or("项目不存在")?;
+    Ok(ProjectSettings {
+        name: meta.name,
+        active_environment_id: meta.active_environment_id,
+        global_variables: meta.global_variables,
+        global_params: meta.global_params,
+    })
+}
+
+pub fn save_project_settings(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    settings: ProjectSettings,
+) -> Result<(), String> {
+    let mut meta = read_project_meta(root, team_key, project_key).ok_or("项目不存在")?;
+    meta.name = settings.name;
+    meta.global_variables = settings.global_variables;
+    meta.global_params = settings.global_params;
+    write_project_meta(root, team_key, project_key, &meta)
+}
+
 pub fn delete_team(root: &Path, team_key: &str) -> Result<(), String> {
     let dir = team_dir(root, team_key);
     if !dir.exists() {
@@ -810,6 +1063,60 @@ mod tests {
         delete_interface(&root, "ops", "user-api", &[], "health").unwrap();
         delete_group(&root, "ops", "user-api", &["auth2".to_string()]).unwrap();
         assert!(list_interface_tree(&root, "ops", "user-api").is_empty());
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn environment_lifecycle() {
+        let root = temp_root();
+        setup(&root);
+
+        let list = list_environments(&root, "ops", "user-api");
+        assert_eq!(list.len(), 3);
+        assert!(list.iter().any(|e| e.id == "env-prod" && e.active));
+
+        // 激活其它环境
+        set_active_environment(&root, "ops", "user-api", "env-dev").unwrap();
+        let list = list_environments(&root, "ops", "user-api");
+        assert!(list.iter().any(|e| e.id == "env-dev" && e.active));
+
+        // 编辑环境（host + 变量）
+        let mut dev = get_environment(&root, "ops", "user-api", "env-dev").unwrap();
+        dev.host = "https://dev.example.com".into();
+        dev.variables.push(KeyValue { key: "token".into(), value: "abc".into(), enabled: true });
+        save_environment(&root, "ops", "user-api", dev).unwrap();
+        let dev2 = get_environment(&root, "ops", "user-api", "env-dev").unwrap();
+        assert_eq!(dev2.host, "https://dev.example.com");
+        assert_eq!(dev2.variables[0].value, "abc");
+
+        // 新增自定义环境
+        let custom = EnvironmentFile {
+            version: 1,
+            id: "env-staging".into(),
+            file: "staging".into(),
+            name: "预发布".into(),
+            host: String::new(),
+            builtin: false,
+            variables: Vec::new(),
+        };
+        save_environment(&root, "ops", "user-api", custom).unwrap();
+        assert_eq!(list_environments(&root, "ops", "user-api").len(), 4);
+
+        // 内置不可删，自定义可删
+        assert!(delete_environment(&root, "ops", "user-api", "env-prod").is_err());
+        delete_environment(&root, "ops", "user-api", "env-staging").unwrap();
+        assert_eq!(list_environments(&root, "ops", "user-api").len(), 3);
+
+        // 项目设置（全局变量/参数）
+        let mut settings = get_project_settings(&root, "ops", "user-api").unwrap();
+        assert_eq!(settings.active_environment_id.as_deref(), Some("env-dev"));
+        settings.global_variables.push(KeyValue { key: "host".into(), value: "http://glob.example.com".into(), enabled: true });
+        settings.global_params.headers.push(KeyValue { key: "X-Trace".into(), value: "1".into(), enabled: true });
+        save_project_settings(&root, "ops", "user-api", settings).unwrap();
+        let s2 = get_project_settings(&root, "ops", "user-api").unwrap();
+        assert_eq!(s2.global_variables[0].key, "host");
+        assert_eq!(s2.global_params.headers[0].key, "X-Trace");
 
         std::fs::remove_dir_all(&root).unwrap();
     }

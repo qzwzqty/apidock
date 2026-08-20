@@ -34,6 +34,24 @@ export interface KeyValue {
   enabled: boolean;
 }
 
+export interface Body {
+  mode: string;
+  content: string;
+  contentType: string;
+  form: KeyValue[];
+  filePath: string | null;
+}
+
+export interface Auth {
+  kind: string;
+  token: string;
+  username: string;
+  password: string;
+  apiKeyName: string;
+  apiKeyIn: string;
+  apiKeyValue: string;
+}
+
 export interface InterfaceFile {
   version: number;
   id: string;
@@ -42,8 +60,61 @@ export interface InterfaceFile {
   url: string;
   headers: KeyValue[];
   query: KeyValue[];
+  body: Body;
+  auth: Auth;
+  variables: KeyValue[];
   description: string;
 }
+
+export interface EnvironmentFile {
+  version: number;
+  id: string;
+  file: string;
+  name: string;
+  host: string;
+  builtin: boolean;
+  variables: KeyValue[];
+}
+
+export interface EnvironmentSummary {
+  id: string;
+  file: string;
+  name: string;
+  host: string;
+  builtin: boolean;
+  active: boolean;
+}
+
+export interface GlobalParams {
+  headers: KeyValue[];
+  cookies: KeyValue[];
+  query: KeyValue[];
+}
+
+export interface ProjectSettings {
+  name: string;
+  activeEnvironmentId: string | null;
+  globalVariables: KeyValue[];
+  globalParams: GlobalParams;
+}
+
+export interface SendResponse {
+  status: number;
+  statusText: string;
+  headers: KeyValue[];
+  body: string;
+  timeMs: number;
+  sizeBytes: number;
+  truncated: boolean;
+  resolvedUrl: string;
+}
+
+export interface SendErrorInfo {
+  kind: string;
+  message: string;
+}
+
+export type SendOutcome = { ok: true; res: SendResponse } | { ok: false; err: SendErrorInfo };
 
 export interface InterfaceDoc {
   groupPath: string[];
@@ -94,4 +165,33 @@ export const api = {
     invoke<void>("rename_interface", { teamKey, projectKey, groupPath, ifaceKey, newName }),
   deleteInterface: (teamKey: string, projectKey: string, groupPath: string[], ifaceKey: string) =>
     invoke<void>("delete_interface", { teamKey, projectKey, groupPath, ifaceKey }),
+
+  listEnvironments: (teamKey: string, projectKey: string) =>
+    invoke<EnvironmentSummary[]>("list_environments", { teamKey, projectKey }),
+  getEnvironment: (teamKey: string, projectKey: string, envId: string) =>
+    invoke<EnvironmentFile>("get_environment", { teamKey, projectKey, envId }),
+  saveEnvironment: (teamKey: string, projectKey: string, env: EnvironmentFile) =>
+    invoke<void>("save_environment", { teamKey, projectKey, env }),
+  deleteEnvironment: (teamKey: string, projectKey: string, envId: string) =>
+    invoke<void>("delete_environment", { teamKey, projectKey, envId }),
+  setActiveEnvironment: (teamKey: string, projectKey: string, envId: string) =>
+    invoke<void>("set_active_environment", { teamKey, projectKey, envId }),
+  getProjectSettings: (teamKey: string, projectKey: string) =>
+    invoke<ProjectSettings>("get_project_settings", { teamKey, projectKey }),
+  saveProjectSettings: (teamKey: string, projectKey: string, settings: ProjectSettings) =>
+    invoke<void>("save_project_settings", { teamKey, projectKey, settings }),
+
+  sendRequest: async (
+    teamKey: string,
+    projectKey: string,
+    envId: string,
+    iface: InterfaceFile,
+  ): Promise<SendOutcome> => {
+    try {
+      const res = await invoke<SendResponse>("send_request", { teamKey, projectKey, envId, iface });
+      return { ok: true, res };
+    } catch (e) {
+      return { ok: false, err: e as SendErrorInfo };
+    }
+  },
 };

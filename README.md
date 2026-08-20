@@ -4,14 +4,14 @@
 
 ## 快速开始
 
-> M0 工程骨架已完成：Tauri 2 + React + Vite + TS，数据根目录选择入口 + 团队/项目扫描 + 标签栏（含持久化）。
+> 进展：M0 工程骨架、M1 接口/分组树 CRUD、M2 接口测试（环境/变量 + 发送 + 响应预览）已完成。
 
 1. 阅读 [需求文档](docs/requirements.md) —— 功能和验收范围
 2. 阅读 [技术方案](docs/tech-plan.md) —— 技术栈与模块设计
 3. 阅读 [决策记录](docs/adr/) —— 关键选型及理由
 4. 词汇表见 [CONTEXT.md](CONTEXT.md)
 5. 开发运行：`npm install`，然后 `npm run tauri dev`
-6. 测试：`cargo test`（src-tauri 下）
+6. 测试：`cargo test`（src-tauri 下，11 个单测 + HTTP 端到端）
 
 ## 仓库结构
 

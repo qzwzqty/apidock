@@ -64,7 +64,7 @@ function legacyJsonToBody(json: JsonBody | { rootType?: string; fields?: BodyFie
   return { root: { ...newBodyField(""), type: "object", children: anyJ.fields ?? [] } };
 }
 
-/** 旧版 {key,value,enabled} 参数自动升级为文档化参数 */
+/** 旧版 {key,value,enabled} 参数自动升级为文档化参数（文档模式下全部参与发送，启停权移交未来的调试模式） */
 function legacyParam(p: ApiParam | KeyValue): ApiParam {
   const anyP = p as ApiParam;
   return {
@@ -73,7 +73,7 @@ function legacyParam(p: ApiParam | KeyValue): ApiParam {
     required: anyP.required ?? false,
     type: anyP.type ?? "",
     description: anyP.description ?? "",
-    enabled: anyP.enabled ?? true,
+    enabled: true,
   };
 }
 
@@ -327,7 +327,6 @@ function ParamList({
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        <span className="w-3.5 shrink-0" title="发送时是否携带" />
         <span className="w-44">参数名</span>
         <span className="w-24">类型</span>
         <span className="w-14 shrink-0">必填</span>
@@ -342,13 +341,6 @@ function ParamList({
       )}
       {rows.map((row, i) => (
         <div key={i} className="flex items-center gap-1.5">
-          <input
-            type="checkbox"
-            className="h-3.5 w-3.5 shrink-0 cursor-pointer accent-(--ring)"
-            title="发送时是否携带"
-            checked={row.enabled}
-            onChange={(e) => setRow(i, { enabled: e.target.checked })}
-          />
           <Input
             className="h-7 w-44"
             placeholder={placeholderK}

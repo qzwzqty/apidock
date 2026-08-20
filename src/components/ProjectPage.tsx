@@ -280,13 +280,11 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
         <PromptDialog
           open
           title="重命名分组"
-          nameLabel="显示名"
-          keyLabel="英文键"
+          nameLabel="分组名（将作为目录名）"
           mode="rename"
           extraName={dlg.ref.key}
-          extraKey={dlg.ref.key}
           onClose={() => setDlg(null)}
-          onSubmit={(key, name) => renameGroup(tabId, teamKey, projectKey, dlg.ref.groupPath, key, name)}
+          onSubmit={(name) => renameGroup(tabId, teamKey, projectKey, dlg.ref.groupPath, name)}
           confirmText="重命名"
         />
       )}

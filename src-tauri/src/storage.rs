@@ -590,7 +590,39 @@ fn project_api_exists(root: &Path, team_key: &str, project_key: &str) -> bool {
     project_api_dir(root, team_key, project_key).is_dir()
 }
 
-/// 由显示名自动生成英文键：可转写则用转写，否则随机短 id；冲突自动追加序号
+/// 用户输入的名称直接作为目录/文件名：仅做合法性校验（防特殊字符导致创建失败）
+pub fn validate_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err("名称不能为空".into());
+    }
+    if name.chars().count() > 120 {
+        return Err("名称过长（最多 120 个字符）".into());
+    }
+    if name == "." || name == ".." {
+        return Err("非法名称".into());
+    }
+    let has_illegal = name.chars().any(|c| {
+        c <= '\u{1f}'
+            || matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+    });
+    if has_illegal {
+        return Err("名称包含特殊字符（不允许 \\ / : * ? \" < > | 及控制字符）".into());
+    }
+    if name.ends_with('.') || name.ends_with(' ') {
+        return Err("名称不能以 . 或空格结尾".into());
+    }
+    let stem = name.split('.').next().unwrap_or(name).to_uppercase();
+    let reserved = ["CON", "PRN", "AUX", "NUL"];
+    let com_lpt = (stem.starts_with("COM") || stem.starts_with("LPT"))
+        && stem[3..].parse::<u8>().is_ok_and(|n| (1..=9).contains(&n));
+    if reserved.contains(&stem.as_str()) || com_lpt {
+        return Err("该名称为系统保留名，请更换".into());
+    }
+    Ok(name.to_string())
+}
+
+/// 由显示名自动生成英文键（仅接口文件使用）：可转写则用转写，否则随机短 id；冲突自动追加序号
 pub fn generate_key<F: FnMut(&str) -> bool>(display: &str, mut exists: F) -> String {
     let base = sanitize_key(display);
     let base = if base.is_empty() {
@@ -661,7 +693,6 @@ pub fn rename_group(
     team_key: &str,
     project_key: &str,
     group_path: &[String],
-    new_key: &str,
     new_name: &str,
 ) -> Result<(), String> {
     let dir = group_dir_at(root, team_key, project_key, group_path);
@@ -673,16 +704,16 @@ pub fn rename_group(
     }
     let parent = dir.parent().map(Path::to_path_buf).unwrap_or_default();
     let description = read_json::<GroupMeta>(&dir.join(GROUP_FILE)).map(|m| m.description).unwrap_or_default();
-    if new_key != group_path.last().map(String::as_str).unwrap_or_default() {
-        let target = parent.join(new_key);
+    if new_name != group_path.last().map(String::as_str).unwrap_or_default() {
+        let target = parent.join(new_name);
         if target.exists() {
-            return Err(format!("分组键 {new_key} 已存在"));
+            return Err(format!("已存在同名分组 {new_name}"));
         }
         fs::rename(&dir, &target).map_err(|e| e.to_string())?;
     }
     let meta = GroupMeta { version: SCHEMA_VERSION, name: new_name.to_string(), description };
     let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
-    atomic_write(&parent.join(new_key).join(GROUP_FILE), &text).map_err(|e| e.to_string())
+    atomic_write(&parent.join(new_name).join(GROUP_FILE), &text).map_err(|e| e.to_string())
 }
 
 pub fn delete_group(
@@ -993,24 +1024,24 @@ fn rename_dir_if_needed(dir: &Path, new_key: &str) -> Result<PathBuf, String> {
     }
 }
 
-pub fn rename_team(root: &Path, team_key: &str, new_key: &str, new_name: &str) -> Result<(), String> {
+pub fn rename_team(root: &Path, team_key: &str, new_name: &str) -> Result<(), String> {
     let dir = team_dir(root, team_key);
     if !dir.exists() {
         return Err(format!("团队 {team_key} 不存在"));
     }
     let description = read_json::<TeamMeta>(&dir.join(TEAM_FILE)).map(|m| m.description).unwrap_or_default();
-    let dir = rename_dir_if_needed(&dir, new_key)?;
+    let dir = rename_dir_if_needed(&dir, new_name)?;
     let meta = TeamMeta { version: SCHEMA_VERSION, name: new_name.to_string(), description };
     let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
     atomic_write(&dir.join(TEAM_FILE), &text).map_err(|e| e.to_string())
 }
 
-pub fn rename_project(root: &Path, team_key: &str, project_key: &str, new_key: &str, new_name: &str) -> Result<(), String> {
+pub fn rename_project(root: &Path, team_key: &str, project_key: &str, new_name: &str) -> Result<(), String> {
     let dir = project_dir(root, team_key, project_key);
     if !dir.exists() {
         return Err(format!("项目 {project_key} 不存在"));
     }
-    let dir = rename_dir_if_needed(&dir, new_key)?;
+    let dir = rename_dir_if_needed(&dir, new_name)?;
     let mut meta = read_project_meta(root, team_key, project_key).unwrap_or(ProjectMeta {
         version: SCHEMA_VERSION,
         name: project_key.into(),
@@ -1175,6 +1206,28 @@ mod tests {
     }
 
     #[test]
+    fn validate_name_rejects_special_chars() {
+        assert!(validate_name("订单服务").is_ok());
+        assert!(validate_name("User API").is_ok());
+        assert!(validate_name("").is_err());
+        assert!(validate_name("   ").is_err());
+        assert!(validate_name("a/b").is_err());
+        assert!(validate_name("a\\b").is_err());
+        assert!(validate_name("a:b").is_err());
+        assert!(validate_name("a*b").is_err());
+        assert!(validate_name("a?b").is_err());
+        assert!(validate_name("a\"b").is_err());
+        assert!(validate_name("a<b").is_err());
+        assert!(validate_name("a>b").is_err());
+        assert!(validate_name("a|b").is_err());
+        assert!(validate_name("CON").is_err());
+        assert!(validate_name("a.").is_err());
+        assert_eq!(validate_name("a ").unwrap(), "a"); // 尾随空格会被自动去除
+        assert!(validate_name("..").is_err());
+        assert_eq!(validate_name("  订单服务  ").unwrap(), "订单服务");
+    }
+
+    #[test]
     fn team_and_project_crud() {
         let root = temp_root();
         ensure_root(&root).unwrap();
@@ -1295,14 +1348,14 @@ mod tests {
         assert_eq!(get_interface(&root, "ops", "user-api", &[], "health").unwrap().name, "健康检查v2");
         assert!(interface_file(&root, "ops", "user-api", &[], "health").exists());
 
-        // 重命名分组（改键会移动目录）
-        rename_group(&root, "ops", "user-api", &["auth".to_string()], "auth2", "鉴权v2").unwrap();
-        assert!(group_dir_at(&root, "ops", "user-api", &["auth2".to_string()]).is_dir());
+        // 重命名分组（目录名 = 新名称）
+        rename_group(&root, "ops", "user-api", &["auth".to_string()], "鉴权v2").unwrap();
+        assert!(group_dir_at(&root, "ops", "user-api", &["鉴权v2".to_string()]).is_dir());
         assert!(!group_dir_at(&root, "ops", "user-api", &["auth".to_string()]).is_dir());
 
         // 删除
         delete_interface(&root, "ops", "user-api", &[], "health").unwrap();
-        delete_group(&root, "ops", "user-api", &["auth2".to_string()]).unwrap();
+        delete_group(&root, "ops", "user-api", &["鉴权v2".to_string()]).unwrap();
         assert!(list_interface_tree(&root, "ops", "user-api").is_empty());
 
         std::fs::remove_dir_all(&root).unwrap();
@@ -1371,26 +1424,31 @@ mod tests {
         create_group(&root, "ops", "user-api", &["g1".to_string()], "g1-1", "子分组").unwrap();
         create_interface(&root, "ops", "user-api", &["g1".to_string()], "in-g1", "分组内接口").unwrap();
 
-        // 重命名团队 / 项目
-        rename_team(&root, "ops", "devops", "运维研发").unwrap();
-        assert!(team_dir(&root, "devops").is_dir());
-        rename_project(&root, "devops", "user-api", "user-center", "用户中心v2").unwrap();
-        assert!(project_dir(&root, "devops", "user-center").is_dir());
+        // 重命名团队 / 项目（目录名 = 用户输入，可为中文）
+        rename_team(&root, "ops", "运维研发").unwrap();
+        assert!(team_dir(&root, "运维研发").is_dir());
+        assert!(!team_dir(&root, "ops").is_dir());
+        rename_project(&root, "运维研发", "user-api", "用户中心").unwrap();
+        assert!(project_dir(&root, "运维研发", "用户中心").is_dir());
 
         // 移动接口到分组
-        let new_key = move_interface(&root, "devops", "user-center", &[], "a", &["g1".to_string()]).unwrap();
+        let new_key = move_interface(&root, "运维研发", "用户中心", &[], "a", &["g1".to_string()]).unwrap();
         assert_eq!(new_key, "a");
-        assert!(interface_file(&root, "devops", "user-center", &["g1".to_string()], "a").exists());
-        assert!(!interface_file(&root, "devops", "user-center", &[], "a").exists());
+        assert!(interface_file(&root, "运维研发", "用户中心", &["g1".to_string()], "a").exists());
+        assert!(!interface_file(&root, "运维研发", "用户中心", &[], "a").exists());
 
-        // 移动分组 g1 到项目根下另一个分组（先造目标）
-        create_group(&root, "devops", "user-center", &[], "ext", "外部").unwrap();
-        move_group(&root, "devops", "user-center", &["g1".to_string()], &["ext".to_string()]).unwrap();
-        assert!(group_dir_at(&root, "devops", "user-center", &["ext".to_string(), "g1".to_string()]).is_dir());
-        assert!(!group_dir_at(&root, "devops", "user-center", &["g1".to_string()]).is_dir());
+        // 移动分组 g1 到 ext 下
+        create_group(&root, "运维研发", "用户中心", &[], "ext", "外部").unwrap();
+        move_group(&root, "运维研发", "用户中心", &["g1".to_string()], &["ext".to_string()]).unwrap();
+        assert!(group_dir_at(&root, "运维研发", "用户中心", &["ext".to_string(), "g1".to_string()]).is_dir());
+        assert!(!group_dir_at(&root, "运维研发", "用户中心", &["g1".to_string()]).is_dir());
 
         // 不能移动到自身子孙
-        assert!(move_group(&root, "devops", "user-center", &["ext".to_string()], &["ext".to_string(), "g1".to_string()]).is_err());
+        assert!(move_group(&root, "运维研发", "用户中心", &["ext".to_string()], &["ext".to_string(), "g1".to_string()]).is_err());
+
+        // 分组重命名（改目录名）
+        rename_group(&root, "运维研发", "用户中心", &["ext".to_string()], "外部服务").unwrap();
+        assert!(group_dir_at(&root, "运维研发", "用户中心", &["外部服务".to_string()]).is_dir());
 
         std::fs::remove_dir_all(&root).unwrap();
     }

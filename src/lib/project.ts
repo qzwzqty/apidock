@@ -32,7 +32,7 @@ interface ProjectStore {
   setActive: (tabId: string, id: string) => void;
   refresh: (tabId: string, teamKey: string, projectKey: string) => Promise<void>;
   createGroup: (tabId: string, teamKey: string, projectKey: string, parentPath: string[], name: string, description?: string) => Promise<void>;
-  renameGroup: (tabId: string, teamKey: string, projectKey: string, groupPath: string[], newKey: string, newName: string) => Promise<void>;
+  renameGroup: (tabId: string, teamKey: string, projectKey: string, groupPath: string[], newName: string) => Promise<void>;
   deleteGroup: (tabId: string, teamKey: string, projectKey: string, groupPath: string[]) => Promise<void>;
   createInterface: (tabId: string, teamKey: string, projectKey: string, groupPath: string[], name: string, description?: string) => Promise<void>;
   renameInterface: (tabId: string, teamKey: string, projectKey: string, groupPath: string[], key: string, name: string) => Promise<void>;
@@ -115,8 +115,8 @@ export const useProject = create<ProjectStore>()((set, get) => ({
     await get().loadTree(tabId, teamKey, projectKey);
   },
 
-  renameGroup: async (tabId, teamKey, projectKey, groupPath, newKey, newName) => {
-    await api.renameGroup(teamKey, projectKey, groupPath, newKey, newName);
+  renameGroup: async (tabId, teamKey, projectKey, groupPath, newName) => {
+    await api.renameGroup(teamKey, projectKey, groupPath, newName);
     await get().loadTree(tabId, teamKey, projectKey);
   },
 

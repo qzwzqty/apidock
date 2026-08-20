@@ -36,10 +36,10 @@ interface WorkspaceStore {
   selectTeam: (teamKey: string) => Promise<void>;
   createTeam: (name: string, description?: string) => Promise<void>;
   deleteTeam: (teamKey: string) => Promise<void>;
-  renameTeam: (teamKey: string, newKey: string, newName: string) => Promise<void>;
+  renameTeam: (teamKey: string, newName: string) => Promise<void>;
   createProject: (teamKey: string, name: string, description?: string) => Promise<void>;
   deleteProject: (projectKey: string) => Promise<void>;
-  renameProject: (teamKey: string, projectKey: string, newKey: string, newName: string) => Promise<void>;
+  renameProject: (teamKey: string, projectKey: string, newName: string) => Promise<void>;
   openProject: (teamKey: string, projectKey: string) => void;
   closeTab: (id: string) => void;
   setActiveTab: (id: string) => void;
@@ -136,15 +136,34 @@ export const useWorkspace = create<WorkspaceStore>()((set, get) => ({
     }
   },
 
-  renameTeam: async (teamKey, newKey, newName) => {
-    // 若改键，需同步把该团队下已打开的标签也迁移（简化：先保持，刷新列表）
-    await api.renameTeam(teamKey, sanitizeKey(newKey), newName);
+  renameTeam: async (teamKey, newName) => {
+    // 团队目录名 = 新名称；若被打开的项目标签引用该团队，需同步迁移
+    await api.renameTeam(teamKey, newName);
+    if (get().openTabs.some((t) => t.teamKey === teamKey)) {
+      const { openTabs, activeTab } = get();
+      const tabs = openTabs.map((t) =>
+        t.teamKey === teamKey ? { ...t, teamKey: newName } : t,
+      );
+      const map = openTabs.map((t) => t);
+      const oldIds = map.filter((t) => t.teamKey === teamKey).map((t) => tabId(t));
+      const newIds = tabs.filter((t) => t.teamKey === newName).map((t) => tabId(t));
+      let nextActive = activeTab;
+      if (activeTab && oldIds.includes(activeTab)) {
+        nextActive = newIds[oldIds.indexOf(activeTab)] ?? MAIN_TAB_ID;
+      }
+      set({ openTabs: tabs, activeTab: nextActive });
+      oldIds.forEach((id, i) => {
+        useProject.getState().dropProject(id);
+        const nid = newIds[i];
+        if (nid) void useProject.getState().loadTree(nid, newName, tabs[i].projectKey);
+      });
+      void persistTabs(tabs, nextActive, get().proxy);
+    }
     const teams = await api.listTeams();
     set({ teams });
-    if (get().selectedTeamKey === teamKey) {
-      set({ selectedTeamKey: teams.find((t) => t.name === newName)?.key ?? teams[0]?.key ?? null });
-      const sel = get().selectedTeamKey;
-      if (sel) await get().refreshTeam(sel);
+    if (get().selectedTeamKey === teamKey || !get().selectedTeamKey) {
+      set({ selectedTeamKey: newName });
+      await get().refreshTeam(newName);
     }
   },
 
@@ -163,18 +182,19 @@ export const useWorkspace = create<WorkspaceStore>()((set, get) => ({
     await get().refreshTeam(teamKey);
   },
 
-  renameProject: async (teamKey, projectKey, newKey, newName) => {
-    await api.renameProject(teamKey, projectKey, sanitizeKey(newKey), newName);
+  renameProject: async (teamKey, projectKey, newName) => {
+    await api.renameProject(teamKey, projectKey, newName);
     if (get().openTabs.some((t) => t.teamKey === teamKey && t.projectKey === projectKey)) {
       const { openTabs, activeTab } = get();
       const tabs = openTabs.map((t) =>
-        t.teamKey === teamKey && t.projectKey === projectKey ? { ...t, projectKey: sanitizeKey(newKey) } : t,
+        t.teamKey === teamKey && t.projectKey === projectKey ? { ...t, projectKey: newName } : t,
       );
       const oldId = `project:${teamKey}:${projectKey}`;
-      const newId = `project:${teamKey}:${sanitizeKey(newKey)}`;
+      const newId = `project:${teamKey}:${newName}`;
       const nextActive = activeTab === oldId ? newId : activeTab;
       set({ openTabs: tabs, activeTab: nextActive });
       useProject.getState().dropProject(oldId);
+      useProject.getState().loadTree(newId, teamKey, newName);
       void persistTabs(tabs, nextActive, get().proxy);
     }
     await get().refreshTeam(teamKey);

@@ -87,13 +87,15 @@ fn create_team(
     description: Option<String>,
 ) -> Result<TeamInfo, String> {
     let root = with_root(&state)?;
-    let exists = |k: &str| storage::list_teams(&root).iter().any(|t| t.key == k);
-    let key = storage::generate_key(&name, exists);
-    let name = if name.trim().is_empty() { key.clone() } else { name };
-    let team = storage::create_team(&root, &key, &name)?;
+    // 目录名 = 用户输入名（只校验特殊字符）
+    let name = storage::validate_name(&name)?;
+    if storage::list_teams(&root).iter().any(|t| t.key == name) {
+        return Err("已存在同名团队".into());
+    }
+    let team = storage::create_team(&root, &name, &name)?;
     if let Some(desc) = description {
         if !desc.trim().is_empty() {
-            storage::set_team_description(&root, &key, desc.trim())?;
+            storage::set_team_description(&root, &name, desc.trim())?;
         }
     }
     Ok(team)
@@ -107,13 +109,14 @@ fn create_project(
     description: Option<String>,
 ) -> Result<ProjectInfo, String> {
     let root = with_root(&state)?;
-    let exists = |k: &str| storage::list_projects(&root, &team_key).iter().any(|p| p.key == k);
-    let key = storage::generate_key(&name, exists);
-    let name = if name.trim().is_empty() { key.clone() } else { name };
-    let project = storage::create_project(&root, &team_key, &key, &name)?;
+    let name = storage::validate_name(&name)?;
+    if storage::list_projects(&root, &team_key).iter().any(|p| p.key == name) {
+        return Err("已存在同名项目".into());
+    }
+    let project = storage::create_project(&root, &team_key, &name, &name)?;
     if let Some(desc) = description {
         if !desc.trim().is_empty() {
-            storage::set_project_description(&root, &team_key, &key, desc.trim())?;
+            storage::set_project_description(&root, &team_key, &name, desc.trim())?;
         }
     }
     Ok(project)
@@ -139,15 +142,14 @@ fn delete_project(
 fn rename_team(
     state: State<'_, AppState>,
     team_key: String,
-    new_key: String,
     new_name: String,
 ) -> Result<(), String> {
     let root = with_root(&state)?;
-    let new_key = storage::sanitize_key(&new_key);
-    if new_key.is_empty() {
-        return Err("团队键不能为空".into());
+    let new_name = storage::validate_name(&new_name)?;
+    if new_name != team_key && storage::list_teams(&root).iter().any(|t| t.key == new_name) {
+        return Err("已存在同名团队".into());
     }
-    storage::rename_team(&root, &team_key, &new_key, &new_name)
+    storage::rename_team(&root, &team_key, &new_name)
 }
 
 #[tauri::command]
@@ -155,15 +157,14 @@ fn rename_project(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
-    new_key: String,
     new_name: String,
 ) -> Result<(), String> {
     let root = with_root(&state)?;
-    let new_key = storage::sanitize_key(&new_key);
-    if new_key.is_empty() {
-        return Err("项目键不能为空".into());
+    let new_name = storage::validate_name(&new_name)?;
+    if new_name != project_key && storage::list_projects(&root, &team_key).iter().any(|p| p.key == new_name) {
+        return Err("已存在同名项目".into());
     }
-    storage::rename_project(&root, &team_key, &project_key, &new_key, &new_name)
+    storage::rename_project(&root, &team_key, &project_key, &new_name)
 }
 
 #[tauri::command]
@@ -242,11 +243,12 @@ fn create_group(
     description: Option<String>,
 ) -> Result<(), String> {
     let root = with_root(&state)?;
+    let name = storage::validate_name(&name)?;
     let keys = dir_keys(&storage::list_interface_tree(&root, &team_key, &project_key), &group_path);
-    let exists = move |k: &str| keys.contains(&k.to_string());
-    let key = storage::generate_key(&name, exists);
-    let name = if name.trim().is_empty() { key.clone() } else { name };
-    storage::create_group(&root, &team_key, &project_key, &group_path, &key, &name)?;
+    if keys.contains(&name) {
+        return Err("已存在同名分组/接口".into());
+    }
+    storage::create_group(&root, &team_key, &project_key, &group_path, &name, &name)?;
     if let Some(desc) = description {
         if !desc.trim().is_empty() {
             storage::set_group_description(&root, &team_key, &project_key, &group_path, desc.trim())?;
@@ -261,15 +263,15 @@ fn rename_group(
     team_key: String,
     project_key: String,
     group_path: Vec<String>,
-    new_key: String,
     new_name: String,
 ) -> Result<(), String> {
     let root = with_root(&state)?;
-    let new_key = storage::sanitize_key(&new_key);
-    if new_key.is_empty() {
-        return Err("分组键不能为空".into());
+    let new_name = storage::validate_name(&new_name)?;
+    let keys = dir_keys(&storage::list_interface_tree(&root, &team_key, &project_key), &group_path[..group_path.len().saturating_sub(1)]);
+    if keys.iter().any(|k| k == &new_name && k != group_path.last().map(String::as_str).unwrap_or_default()) {
+        return Err("已存在同名分组/接口".into());
     }
-    storage::rename_group(&root, &team_key, &project_key, &group_path, &new_key, &new_name)
+    storage::rename_group(&root, &team_key, &project_key, &group_path, &new_name)
 }
 
 #[tauri::command]

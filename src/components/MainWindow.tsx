@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Search, Plus, Folder, Trash2, Users, Pencil } from "lucide-react";
 import type { TeamInfo, ProjectInfo } from "@/lib/api";
-import { useWorkspace, sanitizeKey } from "@/lib/workspace";
+import { useWorkspace } from "@/lib/workspace";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -120,9 +120,6 @@ export function MainWindow() {
                     {projects.length} 个项目
                   </span>
                 </div>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  键：{selectedTeam.key}
-                </p>
               </div>
               <Button onClick={() => setShowProjDlg(true)}>
                 <Plus className="h-4 w-4" /> 新建项目
@@ -154,7 +151,6 @@ export function MainWindow() {
                       {proj.name}
                     </span>
                   </div>
-                  <p className="truncate text-xs text-muted-foreground">键：{proj.key}</p>
                   <span className="absolute right-2 top-2 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                     <button
                       className="rounded-sm p-1 text-muted-foreground hover:bg-border hover:text-foreground cursor-pointer"
@@ -219,14 +215,13 @@ export function MainWindow() {
         <CreateDialog
           open
           title="重命名团队"
-          nameLabel="团队名"
+          nameLabel="团队名（将作为目录名）"
           mode="rename"
           extraName={renameTeamTarget.name}
-          extraKey={renameTeamTarget.key}
           confirmText="重命名"
           onClose={() => setRenameTeamTarget(null)}
-          onSubmit={async (key, name) => {
-            await renameTeam(renameTeamTarget.key, key, name);
+          onSubmit={async (name) => {
+            await renameTeam(renameTeamTarget.key, name);
             setRenameTeamTarget(null);
           }}
         />
@@ -235,15 +230,14 @@ export function MainWindow() {
         <CreateDialog
           open
           title="重命名项目"
-          nameLabel="项目名"
+          nameLabel="项目名（将作为目录名）"
           mode="rename"
           extraName={renameProjTarget.name}
-          extraKey={renameProjTarget.key}
           confirmText="重命名"
           onClose={() => setRenameProjTarget(null)}
-          onSubmit={async (key, name) => {
+          onSubmit={async (name) => {
             const team = selectedTeamKey;
-            if (team) await renameProject(team, renameProjTarget.key, key, name);
+            if (team) await renameProject(team, renameProjTarget.key, name);
             setRenameProjTarget(null);
           }}
         />
@@ -308,7 +302,6 @@ function CreateDialog({
   nameLabel,
   mode = "create",
   extraName,
-  extraKey,
   confirmText,
   onClose,
   onSubmit,
@@ -316,17 +309,15 @@ function CreateDialog({
   open: boolean;
   title: string;
   nameLabel: string;
-  /** create：显示「名称 + 描述（英文键自动生成）」，onSubmit(name, description) */
-  /** rename：显示「名称 + 英文键（可改）」，onSubmit(key, name) */
+  /** create：显示「名称 + 描述（可选）」，onSubmit(name, description) */
+  /** rename：显示「名称」直接作为目录名，onSubmit(newName, "") */
   mode?: "create" | "rename";
   extraName?: string;
-  extraKey?: string;
   confirmText?: string;
   onClose: () => void;
   onSubmit: (a: string, b: string) => Promise<void>;
 }) {
   const [name, setName] = useState(extraName ?? "");
-  const [key, setKey] = useState(extraKey ?? "");
   const [desc, setDesc] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -336,26 +327,9 @@ function CreateDialog({
       setErr("请填写名称");
       return;
     }
-    if (mode === "rename") {
-      const finalKey = sanitizeKey(key);
-      if (!finalKey) {
-        setErr("英文键不能为空，且需为字母/数字/连字符");
-        return;
-      }
-      setBusy(true);
-      try {
-        await onSubmit(finalKey, name.trim());
-      } catch (e) {
-        setErr(String(e));
-      } finally {
-        setBusy(false);
-      }
-      return;
-    }
-    // create：英文键由系统自动生成
     setBusy(true);
     try {
-      await onSubmit(name.trim(), desc.trim());
+      await onSubmit(name.trim(), mode === "rename" ? "" : desc.trim());
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -384,17 +358,9 @@ function CreateDialog({
               onChange={(e) => setDesc(e.target.value)}
               placeholder="一句说明这个团队 / 项目的用途"
             />
-            <p className="mt-1 text-[11px] text-muted-foreground">英文键由系统自动生成，无需填写。</p>
           </div>
         ) : (
-          <div>
-            <label className="mb-1 block text-xs text-muted-foreground">英文键</label>
-            <Input
-              value={key}
-              onChange={(e) => setKey(e.target.value)}
-              placeholder="目录/文件名（字母、数字、连字符）"
-            />
-          </div>
+          <p className="text-[11px] text-muted-foreground">目录名将直接使用此名称，禁止包含 \ / : * ? " &lt; &gt; | 等特殊字符。</p>
         )}
         {err && <p className="text-xs text-red-400">{err}</p>}
         <DialogFooter>

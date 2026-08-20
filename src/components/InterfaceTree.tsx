@@ -251,11 +251,9 @@ export function PromptDialog({
   open,
   title,
   nameLabel,
-  keyLabel,
   description,
   mode = "create",
   extraName,
-  extraKey,
   onClose,
   onSubmit,
   confirmText,
@@ -263,17 +261,14 @@ export function PromptDialog({
   open: boolean;
   title: string;
   nameLabel: string;
-  keyLabel?: string;
   description?: boolean;
   mode?: "create" | "rename";
   extraName?: string;
-  extraKey?: string;
   onClose: () => void;
   onSubmit: (a: string, b: string) => Promise<void>;
   confirmText?: string;
 }) {
   const [name, setName] = useState(extraName ?? "");
-  const [key, setKey] = useState(extraKey ?? "");
   const [desc, setDesc] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -283,27 +278,9 @@ export function PromptDialog({
       setErr("请填写名称");
       return;
     }
-    if (mode === "rename") {
-      const finalKey = sanitize(key);
-      if (!finalKey) {
-        setErr("英文键不能为空（仅限字母/数字/连字符）");
-        return;
-      }
-      setBusy(true);
-      try {
-        await onSubmit(finalKey, name.trim());
-        onClose();
-      } catch (e) {
-        setErr(String(e));
-      } finally {
-        setBusy(false);
-      }
-      return;
-    }
-    // create：英文键由系统自动生成
     setBusy(true);
     try {
-      await onSubmit(name.trim(), desc.trim());
+      await onSubmit(name.trim(), mode === "rename" ? "" : desc.trim());
       onClose();
     } catch (e) {
       setErr(String(e));
@@ -323,16 +300,7 @@ export function PromptDialog({
             onChange={(e) => setName(e.target.value)}
           />
         </div>
-        {mode === "rename" ? (
-          <div>
-            <label className="mb-1 block text-xs text-muted-foreground">{keyLabel ?? "英文键"}</label>
-            <Input
-              value={key}
-              onChange={(e) => setKey(e.target.value)}
-              placeholder="英文键，如 order-service"
-            />
-          </div>
-        ) : (
+        {mode === "create" ? (
           description && (
             <div>
               <label className="mb-1 block text-xs text-muted-foreground">描述（可选）</label>
@@ -341,9 +309,10 @@ export function PromptDialog({
                 value={desc}
                 onChange={(e) => setDesc(e.target.value)}
               />
-              <p className="mt-1 text-[11px] text-muted-foreground">英文键由系统自动生成，无需填写。</p>
             </div>
           )
+        ) : (
+          <p className="text-[11px] text-muted-foreground">目录名将直接使用此名称，禁止包含 \ / : * ? " &lt; &gt; | 等特殊字符。</p>
         )}
         {err && <p className="text-xs text-red-400">{err}</p>}
         <DialogFooter>
@@ -353,12 +322,4 @@ export function PromptDialog({
       </div>
     </Dialog>
   );
-}
-
-function sanitize(raw: string): string {
-  return raw
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
 }

@@ -196,12 +196,12 @@ export const api = {
   createProject: (teamKey: string, name: string, description?: string) =>
     invoke<ProjectInfo>("create_project", { teamKey, name, description: description ?? null }),
   deleteTeam: (teamKey: string) => invoke<void>("delete_team", { teamKey }),
-  renameTeam: (teamKey: string, newKey: string, newName: string) =>
-    invoke<void>("rename_team", { teamKey, newKey, newName }),
+  renameTeam: (teamKey: string, newName: string) =>
+    invoke<void>("rename_team", { teamKey, newName }),
   deleteProject: (teamKey: string, projectKey: string) =>
     invoke<void>("delete_project", { teamKey, projectKey }),
-  renameProject: (teamKey: string, projectKey: string, newKey: string, newName: string) =>
-    invoke<void>("rename_project", { teamKey, projectKey, newKey, newName }),
+  renameProject: (teamKey: string, projectKey: string, newName: string) =>
+    invoke<void>("rename_project", { teamKey, projectKey, newName }),
   moveInterface: (teamKey: string, projectKey: string, groupPath: string[], ifaceKey: string, targetGroupPath: string[]) =>
     invoke<string>("move_interface", { teamKey, projectKey, groupPath, ifaceKey, targetGroupPath }),
   moveGroup: (teamKey: string, projectKey: string, groupPath: string[], targetGroupPath: string[]) =>
@@ -213,8 +213,8 @@ export const api = {
     invoke<TreeNode[]>("list_interface_tree", { teamKey, projectKey }),
   createGroup: (teamKey: string, projectKey: string, groupPath: string[], name: string, description?: string) =>
     invoke<void>("create_group", { teamKey, projectKey, groupPath, name, description: description ?? null }),
-  renameGroup: (teamKey: string, projectKey: string, groupPath: string[], newKey: string, newName: string) =>
-    invoke<void>("rename_group", { teamKey, projectKey, groupPath, newKey, newName }),
+  renameGroup: (teamKey: string, projectKey: string, groupPath: string[], newName: string) =>
+    invoke<void>("rename_group", { teamKey, projectKey, groupPath, newName }),
   deleteGroup: (teamKey: string, projectKey: string, groupPath: string[]) =>
     invoke<void>("delete_group", { teamKey, projectKey, groupPath }),
   createInterface: (teamKey: string, projectKey: string, groupPath: string[], name: string, description?: string) =>

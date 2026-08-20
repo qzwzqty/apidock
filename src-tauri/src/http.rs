@@ -54,6 +54,16 @@ fn err(kind: &str, message: impl Into<String>) -> SendErrorInfo {
     SendErrorInfo { kind: kind.into(), message: message.into() }
 }
 
+/// json 模式下的载荷文本：结构树优先，为空回落旧 content
+fn payload_text(iface: &InterfaceFile) -> String {
+    if iface.body.mode == "json" {
+        if let Some(t) = iface.body.json_example_payload() {
+            return t;
+        }
+    }
+    iface.body.content.clone()
+}
+
 pub async fn send(
     iface: &InterfaceFile,
     env: &EnvironmentFile,
@@ -78,17 +88,29 @@ pub async fn send(
         }
     };
     mark(&iface.url);
-    for h in iface.headers.iter().chain(global_params.headers.iter()).chain(global_params.cookies.iter()) {
-        mark(&h.value);
+    for p in &iface.headers {
+        mark(&p.key);
+        mark(&p.example);
     }
-    for q in iface.query.iter().chain(global_params.query.iter()) {
-        mark(&q.value);
+    for kv in global_params.headers.iter().chain(global_params.cookies.iter()) {
+        mark(&kv.key);
+        mark(&kv.value);
+    }
+    for p in &iface.query {
+        mark(&p.example);
+    }
+    for kv in &global_params.query {
+        mark(&kv.value);
     }
     if matches!(iface.body.mode.as_str(), "json" | "raw" | "urlencoded" | "form-data") {
-        mark(&iface.body.content);
+        if iface.body.mode == "json" && !iface.body.json.is_empty() {
+            mark(&payload_text(iface));
+        } else {
+            mark(&iface.body.content);
+        }
         for kv in &iface.body.form {
             mark(&kv.key);
-            mark(&kv.value);
+            mark(&kv.example);
         }
     }
     if iface.auth.kind == "bearer" {
@@ -169,7 +191,7 @@ pub async fn send(
     let mut req = client.request(method, url);
 
     // 请求头：全局参数 > 接口头（后设的覆盖）
-    for kv in global_params.headers.iter().chain(iface.headers.iter()) {
+    for kv in global_params.headers.iter() {
         if kv.enabled && !kv.key.trim().is_empty() {
             req = req.header(
                 variables::substitute(&kv.key, &vars),
@@ -186,6 +208,14 @@ pub async fn send(
                     variables::substitute(&c.key, &vars),
                     variables::substitute(&c.value, &vars)
                 ),
+            );
+        }
+    }
+    for p in &iface.headers {
+        if p.is_active() {
+            req = req.header(
+                variables::substitute(&p.key, &vars),
+                variables::substitute(&p.example, &vars),
             );
         }
     }
@@ -214,10 +244,21 @@ pub async fn send(
         _ => {}
     }
 
-    // 查询参数：全局 > 接口
+    // 查询参数：全局 > 接口（接口参数以示例值为实际值）
     for (k, v) in variables::enabled_pairs(&global_params.query, &vars)
         .into_iter()
-        .chain(variables::enabled_pairs(&iface.query, &vars))
+        .chain(
+            iface
+                .query
+                .iter()
+                .filter(|p| p.is_active())
+                .map(|p| {
+                    (
+                        variables::substitute(&p.key, &vars),
+                        variables::substitute(&p.example, &vars),
+                    )
+                }),
+        )
     {
         req = req.query(&[(k, v)]);
     }
@@ -232,7 +273,7 @@ pub async fn send(
             };
             req = req
                 .header("Content-Type", ct)
-                .body(variables::substitute(&iface.body.content, &vars));
+                .body(variables::substitute(&payload_text(iface), &vars));
         }
         "raw" => {
             let ct = if iface.body.content_type.trim().is_empty() {
@@ -245,15 +286,21 @@ pub async fn send(
                 .body(variables::substitute(&iface.body.content, &vars));
         }
         "urlencoded" => {
-            let pairs = variables::enabled_pairs(&iface.body.form, &vars);
+            let pairs: Vec<(String, String)> = iface.body.form.iter().filter(|p| p.is_active()).map(|p| {
+                (
+                    variables::substitute(&p.key, &vars),
+                    variables::substitute(&p.example, &vars),
+                )
+            }).collect();
             req = req
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .body(serde_urlencoded::to_string(pairs).map_err(|e| err("http", e.to_string()))?);
         }
         "form-data" => {
             let mut form = reqwest::multipart::Form::new();
-            let texts = variables::enabled_pairs(&iface.body.form, &vars);
-            for (key, value) in texts {
+            for p in iface.body.form.iter().filter(|p| p.is_active()) {
+                let key = variables::substitute(&p.key, &vars);
+                let value = variables::substitute(&p.example, &vars);
                 if let Some(path) = value.strip_prefix('@') {
                     let path = path.trim();
                     if path.is_empty() {
@@ -381,8 +428,8 @@ mod tests {
         let mut iface: InterfaceFile = InterfaceFile::new("t");
         iface.method = "POST".into();
         iface.url = format!("http://{addr}/api/{{{{tok}}}}");
-        iface.headers = vec![crate::storage::KeyValue { key: "X-Token".into(), value: "{{tok}}".into(), enabled: true }];
-        iface.body = Body { mode: "json".into(), content: r#"{"u":"{{tok}}"}"#.into(), content_type: String::new(), form: Vec::new(), file_path: None };
+        iface.headers = vec![crate::storage::ApiParam { key: "X-Token".into(), example: "{{tok}}".into(), enabled: true, ..Default::default() }];
+        iface.body = Body { mode: "json".into(), content: r#"{"u":"{{tok}}"}"#.into(), content_type: String::new(), ..Default::default() };
         iface.variables = vec![crate::storage::KeyValue { key: "tok".into(), value: "abc123".into(), enabled: true }];
 
         let res = send(&iface, &mock_env(), &[], &Default::default(), &SendOptions::default()).await.unwrap();
@@ -394,6 +441,51 @@ mod tests {
         assert!(req.starts_with("POST /api/abc123"));
         assert!(req.to_lowercase().contains("x-token: abc123"));
         assert!(req.contains("\"u\":\"abc123\""));
+    }
+
+    #[tokio::test]
+    async fn json_body_generated_from_tree() {
+        let (addr, rx) = serve(r#"{"ok":true}"#);
+        let mut iface: InterfaceFile = InterfaceFile::new("t");
+        iface.method = "POST".into();
+        iface.url = format!("http://{addr}/api");
+        use crate::storage::{BodyField, JsonBody};
+        iface.body = Body {
+            mode: "json".into(),
+            content_type: "application/json".into(),
+            json: JsonBody {
+                root_type: "object".into(),
+                fields: vec![
+                    BodyField { key: "u".into(), field_type: "string".into(), example: "{{tok}}".into(), required: true, ..Default::default() },
+                    BodyField { key: "n".into(), field_type: "integer".into(), example: "42".into(), ..Default::default() },
+                    BodyField {
+                        key: "tags".into(),
+                        field_type: "array".into(),
+                        items: Some(Box::new(BodyField { key: "".into(), field_type: "string".into(), example: "x".into(), ..Default::default() })),
+                        ..Default::default()
+                    },
+                ],
+                items: None,
+            },
+            ..Default::default()
+        };
+        iface.variables = vec![crate::storage::KeyValue { key: "tok".into(), value: "abc".into(), enabled: true }];
+
+        let res = send(&iface, &mock_env(), &[], &Default::default(), &SendOptions::default()).await.unwrap();
+        assert_eq!(res.status, 200);
+        let req = rx.recv().unwrap();
+        assert!(req.contains("\"u\": \"abc\""), "req: {req}");
+        assert!(req.contains("\"n\": 42"), "req: {req}");
+        assert!(req.contains("\"tags\": [\n    \"x\"\n"), "req: {req}");
+        save_generated_content_roundtrip(iface);
+    }
+
+    fn save_generated_content_roundtrip(mut iface: InterfaceFile) {
+        // 模拟保存：树 → content 回写
+        let payload = iface.body.json_example_payload().unwrap();
+        iface.body.content = payload;
+        let back: InterfaceFile = serde_json::from_str(&serde_json::to_string(&iface).unwrap()).unwrap();
+        assert!(back.body.content.contains("\"u\": \"{{tok}}\""));
     }
 
     #[tokio::test]

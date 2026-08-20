@@ -41,12 +41,110 @@ export interface KeyValue {
   enabled: boolean;
 }
 
+/** 文档化参数（查询参数/请求头/表单字段）：示例值作为发送时的实际值 */
+export interface ApiParam {
+  key: string;
+  /** 示例值（磁盘字段名 value，兼容旧数据） */
+  example: string;
+  required: boolean;
+  /** 参数类型：string | integer | number | boolean | object | array | file */
+  type: string;
+  description: string;
+  enabled: boolean;
+}
+
+/** JSON 请求体结构树字段 */
+export interface BodyField {
+  key: string;
+  required: boolean;
+  /** object | array | string | integer | number | boolean | null */
+  type: string;
+  example: string;
+  description: string;
+  children: BodyField[];
+  items: BodyField | null;
+}
+
+/** JSON 请求体：根节点类型 + 字段树 */
+export interface JsonBody {
+  rootType: string; // object | array
+  fields: BodyField[];
+  items: BodyField | null;
+}
+
 export interface Body {
   mode: string;
   content: string;
   contentType: string;
-  form: KeyValue[];
+  /** json 模式的结构化字段树 */
+  json: JsonBody;
+  form: ApiParam[];
   filePath: string | null;
+}
+
+export const EMPTY_JSON_BODY: JsonBody = { rootType: "object", fields: [], items: null };
+export const EMPTY_BODY: Body = {
+  mode: "none",
+  content: "",
+  contentType: "",
+  json: EMPTY_JSON_BODY,
+  form: [],
+  filePath: null,
+};
+export function newApiParam(): ApiParam {
+  return { key: "", example: "", required: false, type: "string", description: "", enabled: true };
+}
+export function newBodyField(key = ""): BodyField {
+  return { key, required: false, type: "string", example: "", description: "", children: [], items: null };
+}
+export function newJsonBody(rootType: "object" | "array" = "object"): JsonBody {
+  return rootType === "array"
+    ? { rootType: "array", fields: [], items: newBodyField() }
+    : { rootType: "object", fields: [], items: null };
+}
+
+/** 由结构树生成示例 JSON（含 {{var}} 原样保留），用于预览 */
+export function jsonBodyToValue(json: JsonBody): unknown {
+  if (json.rootType === "array") {
+    return json.items ? [bodyFieldToValue(json.items)] : [];
+  }
+  const obj: Record<string, unknown> = {};
+  for (const f of json.fields) {
+    if (f.key.trim()) obj[f.key] = bodyFieldToValue(f);
+  }
+  return obj;
+}
+
+function bodyFieldToValue(f: BodyField): unknown {
+  switch (f.type) {
+    case "object": {
+      const obj: Record<string, unknown> = {};
+      for (const c of f.children) {
+        if (c.key.trim()) obj[c.key] = bodyFieldToValue(c);
+      }
+      return obj;
+    }
+    case "array":
+      return f.items ? [bodyFieldToValue(f.items)] : [];
+    case "integer": {
+      const n = Number.parseInt(f.example.trim(), 10);
+      return Number.isNaN(n) ? 0 : n;
+    }
+    case "number": {
+      const n = Number(f.example.trim());
+      return Number.isNaN(n) ? 0 : n;
+    }
+    case "boolean": {
+      const e = f.example.trim().toLowerCase();
+      if (["true", "1", "yes", "y", "on"].includes(e)) return true;
+      if (["false", "0", "no", "n", "off"].includes(e)) return false;
+      return false;
+    }
+    case "null":
+      return null;
+    default:
+      return f.example;
+  }
 }
 
 export interface Auth {
@@ -71,8 +169,8 @@ export interface InterfaceFile {
   name: string;
   method: string;
   url: string;
-  headers: KeyValue[];
-  query: KeyValue[];
+  headers: ApiParam[];
+  query: ApiParam[];
   body: Body;
   auth: Auth;
   variables: KeyValue[];

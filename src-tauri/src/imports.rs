@@ -11,8 +11,8 @@ pub struct ImportedIface {
     pub name: String,
     pub method: String,
     pub url: String,
-    pub headers: Vec<storage::KeyValue>,
-    pub query: Vec<storage::KeyValue>,
+    pub headers: Vec<storage::ApiParam>,
+    pub query: Vec<storage::ApiParam>,
     pub body: storage::Body,
     pub auth: storage::Auth,
     pub description: String,
@@ -107,6 +107,163 @@ fn schema_example(schema: &Value, components: &Value) -> Value {
         Some("null") => Value::Null,
         _ => Value::Null,
     }
+}
+
+/// JSON Schema → 请求体结构树（Apifox 式字段树）
+fn schema_to_json_body(schema: &Value, components: &Value) -> storage::JsonBody {
+    let Some(f) = schema_to_field(schema, components) else {
+        return storage::JsonBody::default();
+    };
+    if f.field_type == "array" {
+        storage::JsonBody { root_type: "array".into(), fields: Vec::new(), items: f.items }
+    } else {
+        storage::JsonBody { root_type: "object".into(), fields: f.children, items: None }
+    }
+}
+
+fn schema_to_field(schema: &Value, components: &Value) -> Option<storage::BodyField> {
+    let mut schema = schema.clone();
+    // 解开 $ref
+    while let Some(r) = schema.get("$ref").and_then(|v| v.as_str()) {
+        let path = format!("/{}", r.strip_prefix("#/").unwrap_or(r));
+        let Some(target) = components.pointer(&path) else { return None };
+        let mut next = target.clone();
+        // 保留外层覆盖字段（description/example 等）
+        if let (Some(from), Some(to)) = (schema.as_object_mut(), next.as_object_mut()) {
+            for (k, v) in from.iter() {
+                if k != "$ref" && !to.contains_key(k) {
+                    to.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        schema = next;
+    }
+    if schema.is_null() {
+        return None;
+    }
+    let description = schema.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string();
+    let field_type = schema
+        .get("type")
+        .and_then(|t| t.as_str())
+        .or_else(|| schema.get("type").and_then(|t| t.as_array()).and_then(|a| a.first()).and_then(|t| t.as_str()))
+        .unwrap_or("string")
+        .to_string();
+    match field_type.as_str() {
+        "object" => {
+            let mut children = Vec::new();
+            if let Some(ps) = schema.get("properties").and_then(|p| p.as_object()) {
+                let required = schema
+                    .get("required")
+                    .and_then(|r| r.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                for (k, pschema) in ps {
+                    if let Some(mut f) = schema_to_field(pschema, components) {
+                        f.key = k.clone();
+                        f.required = required.contains(k);
+                        children.push(f);
+                    }
+                }
+            }
+            Some(storage::BodyField {
+                field_type: "object".into(),
+                description,
+                children,
+                ..Default::default()
+            })
+        }
+        "array" => {
+            let items = schema
+                .get("items")
+                .and_then(|i| schema_to_field(i, components))
+                .map(Box::new);
+            Some(storage::BodyField { field_type: "array".into(), description, items, ..Default::default() })
+        }
+        t => {
+            let example = schema
+                .get("example")
+                .or_else(|| schema.get("default"))
+                .or_else(|| schema.get("enum").and_then(|e| e.as_array()).and_then(|a| a.first()))
+                .map(|v| match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                })
+                .unwrap_or_default();
+            Some(storage::BodyField {
+                field_type: t.to_string(),
+                description,
+                example,
+                ..Default::default()
+            })
+        }
+    }
+}
+
+/// 从 JSON 文本解析出结构树（导入时兜底用）
+fn json_value_to_body(content_str: &str) -> storage::JsonBody {
+    let Ok(v) = serde_json::from_str::<Value>(content_str) else {
+        return storage::JsonBody::default();
+    };
+    if let Some(obj) = v.as_object() {
+        let mut fields = Vec::new();
+        for (k, sub) in obj {
+            let mut f = value_to_field(sub).unwrap_or_else(|| storage::BodyField::new(k));
+            f.key = k.clone();
+            fields.push(f);
+        }
+        storage::JsonBody { root_type: "object".into(), fields, items: None }
+    } else if let Some(arr) = v.as_array() {
+        storage::JsonBody {
+            root_type: "array".into(),
+            fields: Vec::new(),
+            items: arr.first().and_then(value_to_field).map(Box::new),
+        }
+    } else {
+        storage::JsonBody::default()
+    }
+}
+
+fn value_to_field(v: &Value) -> Option<storage::BodyField> {
+    if v.is_null() {
+        return Some(storage::BodyField { field_type: "null".into(), ..Default::default() });
+    }
+    if let Some(obj) = v.as_object() {
+        let mut children = Vec::new();
+        for (k, sub) in obj {
+            let mut f = value_to_field(sub).unwrap_or_else(|| storage::BodyField::new(k));
+            f.key = k.clone();
+            children.push(f);
+        }
+        return Some(storage::BodyField { field_type: "object".into(), children, ..Default::default() });
+    }
+    if let Some(arr) = v.as_array() {
+        return Some(storage::BodyField {
+            field_type: "array".into(),
+            items: arr.first().and_then(value_to_field).map(Box::new),
+            ..Default::default()
+        });
+    }
+    let field_type = match v {
+        Value::String(_) => "string",
+        Value::Number(n) => {
+            if n.as_i64().is_some() {
+                "integer"
+            } else {
+                "number"
+            }
+        }
+        Value::Bool(_) => "boolean",
+        _ => "string",
+    };
+    let example = match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    Some(storage::BodyField { field_type: field_type.into(), example, ..Default::default() })
 }
 
 /// 解析 OpenAPI 3.x（JSON 或 YAML）→ 待导入接口列表
@@ -207,72 +364,112 @@ pub fn parse_openapi(content: &str, is_yaml: bool) -> Result<(String, Vec<Import
                         if k.is_empty() {
                             continue;
                         }
-                        let mut val = p
-                            .get("schema")
-                            .and_then(|s| s.get("default"))
+                        let schema = p.get("schema");
+                        let param_type = schema
+                            .and_then(|s| s.get("type"))
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("string")
+                            .to_string();
+                        let required = p.get("required").and_then(|r| r.as_bool()).unwrap_or(false);
+                        let mut example = p
+                            .get("example")
+                            .cloned()
+                            .or_else(|| schema.and_then(|s| s.get("example")).cloned())
+                            .or_else(|| schema.and_then(|s| s.get("default")).cloned());
+                        if example.is_none() {
+                            if let Some(t) = p.get("schema").and_then(|s| s.get("type")).and_then(|t| t.as_str()) {
+                                example = match t {
+                                    "integer" | "number" => Some(json!(0)),
+                                    "boolean" => Some(json!(false)),
+                                    "array" => Some(json!([])),
+                                    "object" => Some(json!({})),
+                                    _ => None,
+                                };
+                            }
+                        }
+                        let example_str = example
+                            .map(|v| match v {
+                                Value::String(s) => s,
+                                other => other.to_string(),
+                            })
+                            .unwrap_or_default();
+                        let description = p
+                            .get("description")
                             .and_then(|d| d.as_str())
+                            .or_else(|| schema.and_then(|s| s.get("description")).and_then(|d| d.as_str()))
                             .unwrap_or("")
                             .to_string();
-                        if val.is_empty() {
-                            val = p
-                                .get("example")
-                                .and_then(|e| e.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                        }
+                        let param = storage::ApiParam {
+                            key: k,
+                            example: example_str,
+                            required,
+                            param_type,
+                            description,
+                            enabled: true,
+                        };
                         match loc {
-                            "header" => headers.push(storage::KeyValue { key: k, value: val, enabled: true }),
-                            "query" => query.push(storage::KeyValue { key: k, value: val, enabled: true }),
+                            "header" => headers.push(param),
+                            "query" => query.push(param),
                             _ => {}
                         }
                     }
                 }
 
-                if let Some(rb) = op.get("requestBody") {
-                    let Some(content) = rb.get("content").and_then(|c| c.as_object()) else {
-                        continue;
-                    };
-                    if let Some(json_media) = content.get("application/json").and_then(|m| m.as_object()) {
-                        let example: Option<Value> = json_media
-                            .get("example")
-                            .cloned()
-                            .or_else(|| {
-                                json_media
-                                    .get("examples")
-                                    .and_then(|e| e.as_object())
-                                    .and_then(|m| m.values().next())
-                                    .and_then(|x| x.get("value"))
-                                    .cloned()
-                            })
-                            .or_else(|| {
-                                json_media
-                                    .get("schema")
-                                    .map(|s| schema_example(s, &doc))
-                            });
-                        let content_str = match example {
-                            Some(v) => serde_json::to_string_pretty(&v).map_err(|_| "序列化示例失败").unwrap_or("{}".into()),
-                            None => "{}".into(),
+if let Some(rb) = op.get("requestBody") {
+                        let Some(content) = rb.get("content").and_then(|c| c.as_object()) else {
+                            continue;
                         };
-                        body = storage::Body {
-                            mode: "json".into(),
-                            content: content_str,
-                            content_type: "application/json".into(),
-                            ..Default::default()
-                        };
-                    } else if let Some(text_media) = content.get("text/plain").and_then(|m| m.as_object()) {
-                        let content_str = text_media
-                            .get("example")
-                            .and_then(|e| e.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        body = storage::Body {
-                            mode: "raw".into(),
-                            content: content_str,
-                            content_type: "text/plain".into(),
-                            ..Default::default()
-                        };
+                        if let Some(json_media) = content.get("application/json").and_then(|m| m.as_object()) {
+                            // 结构树：以 schema 为准
+                            let mut json_tree = json_media
+                                .get("schema")
+                                .map(|s| schema_to_json_body(s, &doc))
+                                .unwrap_or_default();
+                            let example: Option<Value> = json_media
+                                .get("example")
+                                .cloned()
+                                .or_else(|| {
+                                    json_media
+                                        .get("examples")
+                                        .and_then(|e| e.as_object())
+                                        .and_then(|m| m.values().next())
+                                        .and_then(|x| x.get("value"))
+                                        .cloned()
+                                })
+                                .or_else(|| {
+                                    json_media
+                                        .get("schema")
+                                        .map(|s| schema_example(s, &doc))
+                                });
+                            let content_str = match example {
+                                Some(v) => serde_json::to_string_pretty(&v).map_err(|_| "序列化示例失败").unwrap_or("{}".into()),
+                                None => "{}".into(),
+                            };
+                            // 树为空时用示例回填结构（保持文档可用）
+                            if json_tree.is_empty() {
+                                json_tree = json_value_to_body(&content_str);
+                            }
+                            body = storage::Body {
+                                mode: "json".into(),
+                                content: content_str,
+                                content_type: "application/json".into(),
+                                json: json_tree,
+                                ..Default::default()
+                            };
+                        } else if let Some(text_media) = content.get("text/plain").and_then(|m| m.as_object()) {
+                            let content_str = text_media
+                                .get("example")
+                                .and_then(|e| e.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            body = storage::Body {
+                                mode: "raw".into(),
+                                content: content_str,
+                                content_type: "text/plain".into(),
+                                ..Default::default()
+                            };
+                        }
                     }
-                }
 
                 let mut auth = storage::Auth::default();
                 if let Some(kind) = &security_required {
@@ -377,7 +574,8 @@ fn walk_postman_items(items: &Value, base: Vec<String>) -> Vec<ImportedIface> {
                             continue;
                         }
                         let v = h.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        headers.push(storage::KeyValue { key: k, value: v, enabled: true });
+                        let description = h.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string();
+                        headers.push(storage::ApiParam { key: k, example: v, description, enabled: true, ..Default::default() });
                     }
                 }
                 let mut body = storage::Body::default();
@@ -394,16 +592,17 @@ fn walk_postman_items(items: &Value, base: Vec<String>) -> Vec<ImportedIface> {
                             };
                         }
                         "urlencoded" => {
-                            let form: Vec<storage::KeyValue> = b.get("urlencoded")
+                            let form: Vec<storage::ApiParam> = b.get("urlencoded")
                                 .and_then(|u| u.as_array()).unwrap_or(&Vec::new())
                                 .iter()
                                 .filter_map(|x| {
                                     let key = x.get("key").and_then(|k| k.as_str()).unwrap_or("").to_string();
                                     if key.is_empty() { return None; }
-                                    Some(storage::KeyValue {
+                                    Some(storage::ApiParam {
                                         key,
-                                        value: x.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                        example: x.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                                         enabled: true,
+                                        ..Default::default()
                                     })
                                 })
                                 .collect();
@@ -414,16 +613,18 @@ fn walk_postman_items(items: &Value, base: Vec<String>) -> Vec<ImportedIface> {
                             };
                         }
                         "formdata" => {
-                            let form: Vec<storage::KeyValue> = b.get("formdata")
+                            let form: Vec<storage::ApiParam> = b.get("formdata")
                                 .and_then(|u| u.as_array()).unwrap_or(&Vec::new())
                                 .iter()
                                 .filter_map(|x| {
                                     let key = x.get("key").and_then(|k| k.as_str()).unwrap_or("").to_string();
                                     if key.is_empty() { return None; }
-                                    Some(storage::KeyValue {
+                                    Some(storage::ApiParam {
                                         key,
-                                        value: x.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                        example: x.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                        description: x.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string(),
                                         enabled: true,
+                                        ..Default::default()
                                     })
                                 })
                                 .collect();
@@ -466,7 +667,7 @@ fn walk_postman_items(items: &Value, base: Vec<String>) -> Vec<ImportedIface> {
     out
 }
 
-fn extract_postman_url(req: &Value) -> (String, Vec<storage::KeyValue>) {
+fn extract_postman_url(req: &Value) -> (String, Vec<storage::ApiParam>) {
     if let Some(r) = req.get("url").and_then(|u| u.as_str()) {
         return (r.to_string(), Vec::new());
     }
@@ -481,8 +682,14 @@ fn extract_postman_url(req: &Value) -> (String, Vec<storage::KeyValue>) {
         for q in qs {
             let k = q.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
             if k.is_empty() { continue; }
-            let v = q.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            query.push(storage::KeyValue { key: k, value: v, enabled: true });
+            let param = storage::ApiParam {
+                key: k,
+                example: q.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                description: q.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string(),
+                enabled: true,
+                ..Default::default()
+            };
+            query.push(param);
         }
     }
     (base, query)
@@ -610,14 +817,40 @@ pub fn export_openapi(root: &Path, team_key: &str, project_key: &str, want_yaml:
                     let path_str = if path_str.is_empty() { "/".to_string() } else { path_str };
 
                     let mut parameters = Vec::new();
-                    for q in iface.query.iter().filter(|x| x.enabled && !x.key.is_empty()) {
-                        parameters.push(json!({ "name": q.key, "in": "query", "schema": { "type": "string" } }));
+                    for q in iface.query.iter().filter(|x| x.is_active()) {
+                        let mut meta = json!({
+                            "name": q.key, "in": "query",
+                            "schema": { "type": schema_type_of(&q.param_type) }
+                        });
+                        if q.required {
+                            meta["required"] = json!(true);
+                        }
+                        if !q.description.is_empty() {
+                            meta["description"] = json!(q.description);
+                        }
+                        if !q.example.is_empty() {
+                            meta["example"] = json!(q.example);
+                        }
+                        parameters.push(meta);
                     }
-                    for h in iface.headers.iter().filter(|x| x.enabled && !x.key.is_empty()) {
+                    for h in iface.headers.iter().filter(|x| x.is_active()) {
                         if h.key.eq_ignore_ascii_case("content-type") || h.key.eq_ignore_ascii_case("authorization") {
                             continue;
                         }
-                        parameters.push(json!({ "name": h.key, "in": "header", "schema": { "type": "string" } }));
+                        let mut meta = json!({
+                            "name": h.key, "in": "header",
+                            "schema": { "type": schema_type_of(&h.param_type) }
+                        });
+                        if h.required {
+                            meta["required"] = json!(true);
+                        }
+                        if !h.description.is_empty() {
+                            meta["description"] = json!(h.description);
+                        }
+                        if !h.example.is_empty() {
+                            meta["example"] = json!(h.example);
+                        }
+                        parameters.push(meta);
                     }
 
                     let mut operation = json!({
@@ -631,7 +864,20 @@ pub fn export_openapi(root: &Path, team_key: &str, project_key: &str, want_yaml:
                     }
                     match iface.body.mode.as_str() {
                         "json" => {
-                            let schema = serde_json::from_str::<Value>(&iface.body.content).unwrap_or(json!({}));
+                            // 结构树优先 → OpenAPI Schema；否则用旧 content 文本
+                            let schema = if !iface.body.json.is_empty() {
+                                let mut s = schema_of_json_body(&iface.body.json);
+                                if !iface.body.content.trim().is_empty() {
+                                    if let Ok(ex) = serde_json::from_str::<Value>(&iface.body.content) {
+                                        if !ex.is_null() {
+                                            s["example"] = ex;
+                                        }
+                                    }
+                                }
+                                s
+                            } else {
+                                serde_json::from_str::<Value>(&iface.body.content).unwrap_or(json!({}))
+                            };
                             operation["requestBody"] = json!({
                                 "content": { "application/json": { "schema": schema } }
                             });
@@ -686,6 +932,93 @@ pub fn export_openapi(root: &Path, team_key: &str, project_key: &str, want_yaml:
     };
 
     Ok(ExportOutcome { content, warnings })
+}
+
+/// 参数类型 → OpenAPI schema type（空/未知按 string）
+fn schema_type_of(t: &str) -> &str {
+    match t {
+        "integer" | "number" | "boolean" | "array" | "object" | "string" => t,
+        "file" => "string",
+        _ => "string",
+    }
+}
+
+/// 结构树 → OpenAPI JSON Schema
+fn schema_of_json_body(json: &storage::JsonBody) -> Value {
+    if json.root_type_or_object() == "array" {
+        let mut arr = json!({ "type": "array" });
+        if let Some(item) = &json.items {
+            if let Some(sub) = schema_of_field(item) {
+                arr["items"] = sub;
+            }
+        }
+        arr
+    } else {
+        let mut props = serde_json::Map::new();
+        let mut required = Vec::new();
+        for c in &json.fields {
+            if c.key.trim().is_empty() {
+                continue;
+            }
+            if let Some(sub) = schema_of_field(c) {
+                props.insert(c.key.clone(), sub);
+            }
+            if c.required {
+                required.push(json!(c.key));
+            }
+        }
+        let mut obj = json!({ "type": "object", "properties": props });
+        if !required.is_empty() {
+            obj["required"] = json!(required);
+        }
+        obj
+    }
+}
+
+fn schema_of_field(f: &storage::BodyField) -> Option<Value> {
+    let mut node = match f.field_type.as_str() {
+        "object" => {
+            let mut props = serde_json::Map::new();
+            let mut required = Vec::new();
+            for c in &f.children {
+                if c.key.trim().is_empty() {
+                    continue;
+                }
+                if let Some(sub) = schema_of_field(c) {
+                    props.insert(c.key.clone(), sub);
+                }
+                if c.required {
+                    required.push(json!(c.key));
+                }
+            }
+            let mut obj = json!({ "type": "object", "properties": props });
+            if !required.is_empty() {
+                obj["required"] = json!(required);
+            }
+            obj
+        }
+        "array" => {
+            let mut arr = json!({ "type": "array" });
+            if let Some(item) = &f.items {
+                if let Some(sub) = schema_of_field(item) {
+                    arr["items"] = sub;
+                }
+            }
+            arr
+        }
+        "integer" | "number" | "boolean" | "null" => json!({ "type": f.field_type }),
+        _ => {
+            let mut s = json!({ "type": "string" });
+            if !f.example.is_empty() {
+                s["example"] = json!(f.example);
+            }
+            s
+        }
+    };
+    if !f.description.is_empty() {
+        node["description"] = json!(f.description);
+    }
+    Some(node)
 }
 
 fn split_url(url: &str) -> (String, Option<String>) {

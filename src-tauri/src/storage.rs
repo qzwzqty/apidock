@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -406,14 +407,233 @@ pub struct KeyValue {
     pub enabled: bool,
 }
 
+/// 文档化参数（接口查询参数 / 请求头 / 表单字段均用此结构，Apifox 风格）。
+/// 磁盘上示例值字段名保持 `value`，与旧版数据兼容（旧 kv 直接映射为字符串类型参数）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ApiParam {
+    pub key: String,
+    /// 示例值：发送请求时以示例值作为实际值
+    #[serde(rename = "value")]
+    pub example: String,
+    /// 是否必填
+    pub required: bool,
+    /// 参数类型：string | integer | number | boolean | object | array | file
+    #[serde(rename = "type")]
+    pub param_type: String,
+    /// 参数说明
+    pub description: String,
+    /// 发送时是否启用（默认 true）
+    pub enabled: bool,
+}
+
+impl ApiParam {
+    /// 发送语义：启用且参数名非空
+    pub fn is_active(&self) -> bool {
+        self.enabled && !self.key.trim().is_empty()
+    }
+}
+
+/// JSON 请求体结构树节点（字段：类型 + 必填 + 示例值 + 说明 + 子字段/数组元素）
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BodyField {
+    pub key: String,
+    /// 是否必填
+    pub required: bool,
+    /// 字段类型：object | array | string | integer | number | boolean | null
+    #[serde(rename = "type")]
+    pub field_type: String,
+    /// 示例值（仅叶子类型使用；object/array 忽略）
+    pub example: String,
+    /// 字段说明
+    pub description: String,
+    /// object 的子字段
+    pub children: Vec<BodyField>,
+    /// array 的元素定义
+    pub items: Option<Box<BodyField>>,
+}
+
+impl BodyField {
+    pub fn new(key: &str) -> Self {
+        Self {
+            key: key.to_string(),
+            required: false,
+            field_type: "string".into(),
+            example: String::new(),
+            description: String::new(),
+            children: Vec::new(),
+            items: None,
+        }
+    }
+}
+
+/// JSON 请求体：根节点类型 + 字段树
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct JsonBody {
+    /// 根节点类型：object | array
+    pub root_type: String,
+    /// 根为 object 时的顶层字段
+    pub fields: Vec<BodyField>,
+    /// 根为 array 时的元素定义
+    pub items: Option<Box<BodyField>>,
+}
+
+impl JsonBody {
+    /// 根节点真实类型（空/未知按 object 处理）
+    pub fn root_type_or_object(&self) -> &str {
+        if self.root_type == "array" {
+            "array"
+        } else {
+            "object"
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.root_type.is_empty() && self.fields.is_empty() && self.items.is_none()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Body {
     pub mode: String, // none | json | raw | urlencoded | form-data | file
+    /// raw 文本（或 XML）；json 模式下保存由结构树生成的示例载荷（兼容旧工具读取）
     pub content: String,
     pub content_type: String,
-    pub form: Vec<KeyValue>,
+    /// 仅 json 模式使用：结构化字段树（数据文档 + 发送时的 JSON 生成源）
+    pub json: JsonBody,
+    /// urlencoded / form-data 表单字段（文档化参数）
+    pub form: Vec<ApiParam>,
     pub file_path: Option<String>,
+}
+
+impl Body {
+    /// 生成一份内部确定的 JSON 示例载荷（不做变量替换），用于预览与保存 content
+    fn json_example_value(json: &JsonBody) -> Value {
+        if json.root_type_or_object() == "array" {
+            match &json.items {
+                Some(item) => Value::Array(vec![Self::field_value(item)]),
+                None => Value::Array(Vec::new()),
+            }
+        } else {
+            let mut obj = serde_json::Map::new();
+            for f in &json.fields {
+                if !f.key.trim().is_empty() {
+                    obj.insert(f.key.clone(), Self::field_value(f));
+                }
+            }
+            Value::Object(obj)
+        }
+    }
+
+    pub fn field_value(f: &BodyField) -> Value {
+        match f.field_type.as_str() {
+            "object" => {
+                let mut obj = serde_json::Map::new();
+                for c in &f.children {
+                    if !c.key.trim().is_empty() {
+                        obj.insert(c.key.clone(), Self::field_value(c));
+                    }
+                }
+                Value::Object(obj)
+            }
+            "array" => match &f.items {
+                Some(item) => Value::Array(vec![Self::field_value(item)]),
+                None => Value::Array(Vec::new()),
+            },
+            "integer" => parse_int(&f.example).map(Value::from).unwrap_or(Value::from(0)),
+            "number" => f
+                .example
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|v: &f64| v.is_finite())
+                .map(Value::from)
+                .unwrap_or(Value::from(0)),
+            "boolean" => match f.example.trim().to_lowercase().as_str() {
+                "true" | "1" | "yes" | "y" | "on" => Value::Bool(true),
+                "false" | "0" | "no" | "n" | "off" => Value::Bool(false),
+                _ => Value::Bool(false),
+            },
+            "null" => Value::Null,
+            _ => Value::String(f.example.clone()),
+        }
+    }
+
+    /// 由结构树生成 JSON 文本（作为 content 持久化 / 发送源）
+    pub fn json_example_payload(&self) -> Option<String> {
+        if self.mode != "json" || self.json.is_empty() {
+            return None;
+        }
+        serde_json::to_string_pretty(&Self::json_example_value(&self.json)).ok()
+    }
+
+    /// 旧数据迁移：json 模式且结构树为空但 content 有有效 JSON 文本时，解析进结构树
+    pub fn migrate_json_content(&mut self) {
+        if self.mode != "json" || !self.json.is_empty() || self.content.trim().is_empty() {
+            return;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&self.content) else {
+            return;
+        };
+        self.json = json_value_to_json_body(&v);
+    }
+}
+
+fn parse_int(s: &str) -> Option<i64> {
+    let t = s.trim();
+    t.parse::<i64>().ok().or_else(|| t.parse::<f64>().ok().map(|f| f.trunc() as i64))
+}
+
+/// 把任意 JSON Value 转换为结构树（用于旧 content 迁移与 OpenAPI 示例回填）
+fn json_value_to_json_body(v: &Value) -> JsonBody {
+    match json_value_to_field(v) {
+        Some(f) => {
+            if f.field_type == "array" {
+                JsonBody { root_type: "array".into(), fields: Vec::new(), items: f.items }
+            } else {
+                JsonBody { root_type: "object".into(), fields: f.children, items: None }
+            }
+        }
+        None => JsonBody::default(),
+    }
+}
+
+fn json_value_to_field(v: &Value) -> Option<BodyField> {
+    if v.is_null() {
+        return Some(BodyField { field_type: "null".into(), ..BodyField::new("") });
+    }
+    if let Some(obj) = v.as_object() {
+        let mut children = Vec::new();
+        for (k, sub) in obj {
+            let mut f = json_value_to_field(sub).unwrap_or_else(|| BodyField::new(k));
+            f.key = k.clone();
+            children.push(f);
+        }
+        return Some(BodyField { key: String::new(), field_type: "object".into(), children, ..BodyField::new("") });
+    }
+    if let Some(arr) = v.as_array() {
+        let items = arr.first().and_then(json_value_to_field).map(Box::new);
+        return Some(BodyField { key: String::new(), field_type: "array".into(), items, ..BodyField::new("") });
+    }
+    let field_type = if v.is_string() {
+        "string"
+    } else if v.is_i64() || v.is_u64() {
+        "integer"
+    } else if v.is_f64() {
+        "number"
+    } else if v.is_boolean() {
+        "boolean"
+    } else {
+        "string"
+    };
+    let example = match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    Some(BodyField { field_type: field_type.into(), example, ..BodyField::new("") })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -445,8 +665,8 @@ pub struct InterfaceFile {
     pub name: String,
     pub method: String,
     pub url: String,
-    pub headers: Vec<KeyValue>,
-    pub query: Vec<KeyValue>,
+    pub headers: Vec<ApiParam>,
+    pub query: Vec<ApiParam>,
     pub body: Body,
     pub auth: Auth,
     pub variables: Vec<KeyValue>,
@@ -737,6 +957,7 @@ pub fn create_interface(
     Ok(iface)
 }
 
+/// 读取接口并做旧数据迁移（旧版 json 文本 content → 结构树）
 pub fn get_interface(
     root: &Path,
     team_key: &str,
@@ -744,11 +965,14 @@ pub fn get_interface(
     group_path: &[String],
     iface_key: &str,
 ) -> Result<InterfaceFile, String> {
-    read_interface(root, team_key, project_key, group_path, iface_key)
-        .ok_or_else(|| format!("接口 {iface_key} 不存在"))
+    let mut iface = read_interface(root, team_key, project_key, group_path, iface_key)
+        .ok_or_else(|| format!("接口 {iface_key} 不存在"))?;
+    iface.body.migrate_json_content();
+    Ok(iface)
 }
 
 /// 保存整个接口定义（标准 JSON 写入）
+/// json 模式且结构树非空时，用结构树重新生成 content（示例载荷），保证文件中始终有可读的示例 JSON
 pub fn save_interface(
     root: &Path,
     team_key: &str,
@@ -761,7 +985,11 @@ pub fn save_interface(
     if !path.exists() {
         return Err(format!("接口 {iface_key} 不存在"));
     }
-    let text = serde_json::to_string_pretty(iface).map_err(|e| e.to_string())?;
+    let mut doc = iface.clone();
+    if let Some(payload) = doc.body.json_example_payload() {
+        doc.body.content = payload;
+    }
+    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
     atomic_write(&path, &text).map_err(|e| e.to_string())
 }
 
@@ -1401,6 +1629,46 @@ mod tests {
         assert_eq!(s2.global_params.headers[0].key, "X-Trace");
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn legacy_json_body_migrates_to_tree() {
+        let mut body = Body {
+            mode: "json".into(),
+            content: r#"{"id": 1, "name": "abc", "tags": ["a"], "ok": true, "meta": null}"#.into(),
+            ..Default::default()
+        };
+        body.migrate_json_content();
+        assert_eq!(body.json.root_type, "object");
+        assert_eq!(body.json.fields.len(), 5);
+        let id = body.json.fields.iter().find(|f| f.key == "id").unwrap();
+        assert_eq!(id.field_type, "integer");
+        assert_eq!(id.example, "1");
+        let tags = body.json.fields.iter().find(|f| f.key == "tags").unwrap();
+        assert_eq!(tags.field_type, "array");
+        assert!(tags.items.is_some());
+        let ok = body.json.fields.iter().find(|f| f.key == "ok").unwrap();
+        assert_eq!(ok.field_type, "boolean");
+        // 生成示例载荷
+        assert_eq!(body.json_example_payload().is_some(), true);
+        let v: serde_json::Value = serde_json::from_str(&body.json_example_payload().unwrap()).unwrap();
+        assert_eq!(v["id"], 1);
+        assert_eq!(v["tags"][0], "a");
+        assert!(v["meta"].is_null());
+        // 非 json 模式不迁移
+        let mut raw = Body { mode: "raw".into(), content: "{\"a\":1}".into(), ..Default::default() };
+        raw.migrate_json_content();
+        assert!(raw.json.is_empty());
+    }
+
+    #[test]
+    fn api_param_send_semantics() {
+        let p = ApiParam { key: "  page  ".into(), example: "2".into(), enabled: true, ..Default::default() };
+        assert!(p.is_active());
+        let disabled = ApiParam { key: "page".into(), enabled: false, ..Default::default() };
+        assert!(!disabled.is_active());
+        let empty_key = ApiParam { key: "  ".into(), enabled: true, ..Default::default() };
+        assert!(!empty_key.is_active());
     }
 
     #[test]

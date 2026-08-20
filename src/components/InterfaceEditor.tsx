@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { marked } from "marked";
-import { Save, Send, Check, SlidersHorizontal, RotateCcw, Plus, Trash2, Eye, PencilLine, ChevronRight, ChevronDown } from "lucide-react";
+import { Save, Send, Check, SlidersHorizontal, RotateCcw, Plus, Trash2, Eye, PencilLine, ChevronRight, ChevronDown, Wand2 } from "lucide-react";
 import type { ApiParam, Assertion, Body, BodyField, InterfaceFile, JsonBody, KeyValue } from "@/lib/api";
 import { EMPTY_BODY, isJsonBodyEmpty, newApiParam, newBodyField, jsonBodyToValue } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -103,6 +103,25 @@ function toField(v: unknown): BodyField {
   return { key: "", name: "", required: false, type, example: String(v), description: "", children: [], items: null };
 }
 
+/** 调试模式 JSON 初始文本：由文档结构树生成示例（树为空时回落旧 content） */
+function initialDebugJson(body: InterfaceFile["body"]): string {
+  if (body.mode === "json" && !isJsonBodyEmpty(body.json)) {
+    return JSON.stringify(jsonBodyToValue(body.json), null, 2);
+  }
+  return body.content.trim() || "{}";
+}
+
+/** JSON 文本合法性（{{变量}} 占位符视为字符串，不视为语法错误） */
+function isDebuggableJson(text: string): boolean {
+  if (!text.trim()) return true;
+  try {
+    JSON.parse(text.replace(/\{\{[\s\S]*?\}\}/g, "\"{{var}}\""));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function InterfaceEditor({
   doc,
   onSave,
@@ -122,6 +141,8 @@ export function InterfaceEditor({
   const [saved, setSaved] = useState(false);
   const [showOpts, setShowOpts] = useState(false);
   const [preview, setPreview] = useState(false);
+  /** 调试模式下 Body-JSON 的临时文本（null=未编辑，切换接口时重置） */
+  const [debugJson, setDebugJson] = useState<string | null>(null);
 
   const switchMode = (m: EditorMode) => {
     setMode(m);
@@ -135,6 +156,7 @@ export function InterfaceEditor({
     setBase(normalize(doc));
     setDirty(false);
     setSaved(false);
+    setDebugJson(null);
   }
 
   const update = (patch: Partial<InterfaceFile>) => {
@@ -156,6 +178,22 @@ export function InterfaceEditor({
       setSaved(true);
     } finally {
       setSaving(false);
+    }
+  };
+
+  /** 发送：调试模式下 JSON 请求体按用户输入的原始文本发送（清空结构树让后端回落 content） */
+  const handleSend = () => {
+    if (mode === "debug" && base.body.mode === "json" && debugJson != null) {
+      onSend({
+        ...base,
+        body: {
+          ...base.body,
+          json: { root: { ...newBodyField(""), type: "" } },
+          content: debugJson,
+        },
+      });
+    } else {
+      onSend(base);
     }
   };
 
@@ -237,7 +275,7 @@ export function InterfaceEditor({
             </Button>
           )}
           {mode === "debug" && (
-            <Button onClick={() => onSend(base)} className="bg-green-600 hover:bg-green-500">
+            <Button onClick={handleSend} className="bg-green-600 hover:bg-green-500">
               <Send className="h-4 w-4" /> 发送
             </Button>
           )}
@@ -298,7 +336,14 @@ export function InterfaceEditor({
           <ParamList rows={base.headers} onChange={(list) => updateList("headers", list)} showEnabled={mode === "debug"} />
         )}
         {tab === "body" && (
-          <BodyEditor body={base.body} onChange={(body) => update({ body })} showEnabled={mode === "debug"} />
+          <BodyEditor
+            key={base.id}
+            body={base.body}
+            onChange={(body) => update({ body })}
+            debugMode={mode === "debug"}
+            debugJson={debugJson}
+            onDebugJsonChange={setDebugJson}
+          />
         )}
         {tab === "auth" && <AuthEditor auth={base.auth} onChange={(auth) => update({ auth })} />}
         {tab === "vars" && (
@@ -389,7 +434,7 @@ function KvList({
   );
 }
 
-/** 文档化参数表格：参数名 | 类型 | 必填 | 示例值 | 说明（Apifox 风格）；调试模式可选显示"参与发送"勾选 */
+/** 文档化参数表格：参数名 | 类型 | 必填 | 示例值 | 说明（Apifox 风格）；调试模式隐藏必填列、显示"参与发送"勾选 */
 function ParamList({
   rows,
   onChange,
@@ -401,7 +446,7 @@ function ParamList({
   onChange: (rows: ApiParam[]) => void;
   placeholderK?: string;
   placeholderV?: string;
-  /** 调试模式：是否参与发送（启停权归调试模式，不持久化进文档） */
+  /** 调试模式：显示"是否参与发送"勾选（启停权归调试模式，不持久化进文档），并隐藏必填列 */
   showEnabled?: boolean;
 }) {
   const setRow = (i: number, patch: Partial<ApiParam>) =>
@@ -412,7 +457,7 @@ function ParamList({
         {showEnabled && <span className="w-5 shrink-0" title="是否参与发送" />}
         <span className="w-44">参数名</span>
         <span className="w-24">类型</span>
-        <span className="w-14 shrink-0">必填</span>
+        {!showEnabled && <span className="w-14 shrink-0">必填</span>}
         <span className="flex-1">{placeholderV}</span>
         <span className="flex-1">说明</span>
         <span className="w-8 shrink-0" />
@@ -450,14 +495,16 @@ function ParamList({
               <option key={t} value={t}>{t}</option>
             ))}
           </select>
-          <label className="flex w-14 shrink-0 items-center gap-1 text-xs text-muted-foreground" title="是否必填">
-            <input
-              type="checkbox"
-              className="h-3.5 w-3.5 cursor-pointer accent-(--ring)"
-              checked={row.required}
-              onChange={(e) => setRow(i, { required: e.target.checked })}
-            />
-          </label>
+          {!showEnabled && (
+            <label className="flex w-14 shrink-0 items-center gap-1 text-xs text-muted-foreground" title="是否必填">
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5 cursor-pointer accent-(--ring)"
+                checked={row.required}
+                onChange={(e) => setRow(i, { required: e.target.checked })}
+              />
+            </label>
+          )}
           <Input
             className="h-7 flex-1"
             placeholder={placeholderV}
@@ -490,13 +537,23 @@ function ParamList({
 function BodyEditor({
   body,
   onChange,
-  showEnabled = false,
+  debugMode = false,
+  debugJson = null,
+  onDebugJsonChange = () => {},
 }: {
   body: InterfaceFile["body"];
   onChange: (body: InterfaceFile["body"]) => void;
-  showEnabled?: boolean;
+  /** 调试模式：JSON 用富文本框（临时文本，直接发送），表单显示参与发送勾选 */
+  debugMode?: boolean;
+  /** 调试模式下用户手写的 JSON 文本（null = 未编辑，展示文档生成的初始值） */
+  debugJson?: string | null;
+  onDebugJsonChange?: (text: string) => void;
 }) {
   const [preview, setPreview] = useState(false);
+  /** 调试 JSON 文本：未编辑时由文档结构树（或旧 content）生成 */
+  const debugText = debugJson ?? (body.mode === "json" ? initialDebugJson(body) : "");
+  const debugJsonValid = isDebuggableJson(debugText);
+  const autoGenerate = () => onDebugJsonChange(initialDebugJson(body));
   return (
     <div className="space-y-3">
       {/* Body 格式（分段按钮，Apifox 风格） */}
@@ -517,23 +574,48 @@ function BodyEditor({
         {body.mode === "json" && (
           <>
             <span className="ml-2 text-xs text-muted-foreground">application/json</span>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="ml-auto"
-              onClick={() => setPreview(!preview)}
-            >
-              {preview ? <PencilLine className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-              {preview ? "编辑" : "预览 JSON"}
-            </Button>
+            {!debugMode && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ml-auto"
+                onClick={() => setPreview(!preview)}
+              >
+                {preview ? <PencilLine className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                {preview ? "编辑" : "预览 JSON"}
+              </Button>
+            )}
           </>
         )}
       </div>
 
-      {body.mode === "json" && !preview && (
+      {body.mode === "json" && debugMode && (
+        <div>
+          <div className="mb-1 flex items-center justify-between">
+            <span className="text-xs text-muted-foreground">
+              请求体 JSON（直接发送该文本，支持 {"{{变量}}"}；修改仅在调试中生效，不影响文档）
+            </span>
+            <Button size="sm" variant="outline" title="根据文档中定义的参数结构生成 JSON" onClick={autoGenerate}>
+              <Wand2 className="h-3.5 w-3.5" /> 自动生成
+            </Button>
+          </div>
+          <textarea
+            className="h-72 w-full resize-y rounded-md border border-border bg-muted p-2.5 font-mono text-xs text-foreground outline-none focus:border-ring"
+            value={debugText}
+            onChange={(e) => onDebugJsonChange(e.target.value)}
+            spellCheck={false}
+            placeholder='输入 JSON，如 {"name": "{{userName}}"}'
+          />
+          {!debugJsonValid && (
+            <p className="mt-1 text-xs text-amber-500">JSON 语法无效：发送时将按原文（不校验）发出。</p>
+          )}
+        </div>
+      )}
+
+      {body.mode === "json" && !debugMode && !preview && (
         <JsonBodyEditor json={body.json} onChange={(json) => onChange({ ...body, json })} />
       )}
-      {body.mode === "json" && preview && (
+      {body.mode === "json" && !debugMode && preview && (
         <pre className="max-h-96 overflow-auto rounded-md border border-border bg-muted p-3 font-mono text-xs text-foreground">
           {JSON.stringify(jsonBodyToValue(body.json), null, 2)}
         </pre>
@@ -566,7 +648,7 @@ function BodyEditor({
           onChange={(form) => onChange({ ...body, form })}
           placeholderK="字段名"
           placeholderV={body.mode === "form-data" ? "值 或 @文件路径" : "示例值"}
-          showEnabled={showEnabled}
+          showEnabled={debugMode}
         />
       )}
 

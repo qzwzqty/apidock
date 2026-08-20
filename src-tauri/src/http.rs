@@ -333,13 +333,6 @@ mod tests {
     use super::*;
     use crate::storage::{Body, EnvironmentFile, InterfaceFile};
 
-    #[derive(Debug, Default)]
-    struct RequestCapture {
-        method: String,
-        path: String,
-        req: String,
-    }
-
     /// 起一个一次性 HTTP 服务器线程，捕获首包请求并返回固定响应
     fn serve(
         response: &'static str,

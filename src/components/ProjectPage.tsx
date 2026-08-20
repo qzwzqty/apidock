@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { FolderPlus, FilePlus2, X, Settings2, ChevronDown, FileText, Loader2 } from "lucide-react";
+import { FolderPlus, FilePlus2, X, Settings2, ChevronDown, FileText, Loader2, Play } from "lucide-react";
 import { InterfaceTree, PromptDialog, type IfaceRef } from "@/components/InterfaceTree";
 import { InterfaceEditor } from "@/components/InterfaceEditor";
 import { ResponseView } from "@/components/ResponseView";
 import { EnvManager } from "@/components/EnvManager";
 import { ProjectSettingsDialog } from "@/components/ProjectSettingsDialog";
-import { api, type EnvironmentSummary, type SendOutcome } from "@/lib/api";
+import { RunReportDialog } from "@/components/RunReportDialog";
+import { api, type EnvironmentSummary, type RunReport, type SendOutcome } from "@/lib/api";
 import { useProject } from "@/lib/project";
 import { cn } from "@/lib/utils";
 
@@ -32,6 +33,11 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
   const [sendState, setSendState] = useState<
     { kind: "idle" } | { kind: "loading" } | { kind: "done"; outcome: SendOutcome }
   >({ kind: "idle" });
+  const [runState, setRunState] = useState<{ running: boolean; report: RunReport | null; open: boolean }>({
+    running: false,
+    report: null,
+    open: false,
+  });
 
   const loadEnvs = async () => {
     const [list, settings] = await Promise.all([
@@ -80,6 +86,12 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
     setActiveEnv(id);
   };
 
+  const run = async (groupPath: string[]) => {
+    setRunState({ running: true, report: null, open: true });
+    const report = await api.runInterfaces(teamKey, projectKey, groupPath);
+    setRunState({ running: false, report, open: true });
+  };
+
   return (
     <div className="flex h-full">
       {/* 左侧：接口树 */}
@@ -124,6 +136,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
                   void deleteInterface(tabId, teamKey, projectKey, ref.groupPath, ref.key);
                 }
               }}
+              onRunGroup={(groupPath) => void run(groupPath)}
             />
           )}
         </div>
@@ -134,6 +147,13 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
         {/* 项目上下文行：项目定位 + 环境选择 + 项目设置 */}
         <div className="flex h-9 shrink-0 items-center border-b border-border text-sm">
           <span className="px-4 text-muted-foreground">{teamKey} / {projectKey}</span>
+          <button
+            className="flex h-full cursor-pointer items-center gap-1.5 px-3 text-xs text-accent transition-colors hover:bg-muted"
+            onClick={() => void run([])}
+            title="一键运行项目下全部接口（含断言校验）"
+          >
+            <Play className="h-3.5 w-3.5" /> 运行全部
+          </button>
           <button
             className="ml-auto flex h-full cursor-pointer items-center gap-2 px-3 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             onClick={() => setShowEnvMgr(true)}
@@ -272,6 +292,12 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
         projectKey={projectKey}
         open={showSettings}
         onClose={() => setShowSettings(false)}
+      />
+      <RunReportDialog
+        open={runState.open}
+        running={runState.running}
+        report={runState.report}
+        onClose={() => setRunState((s) => ({ ...s, open: false }))}
       />
     </div>
   );

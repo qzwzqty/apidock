@@ -59,6 +59,12 @@ export interface Auth {
   apiKeyValue: string;
 }
 
+export type Assertion =
+  | { type: "statusCode"; op: string; expected: number }
+  | { type: "header"; key: string; op: string; expected: string }
+  | { type: "time"; op: string; expectedMs: number }
+  | { type: "jsonPath"; path: string; op: string; expected: string };
+
 export interface InterfaceFile {
   version: number;
   id: string;
@@ -70,11 +76,37 @@ export interface InterfaceFile {
   body: Body;
   auth: Auth;
   variables: KeyValue[];
+  assertions: Assertion[];
   description: string;
   timeoutMs?: number | null;
   redirectLimit?: number | null;
   tlsVerify?: boolean | null;
   caCertPath?: string | null;
+}
+
+export interface AssertionResult {
+  passed: boolean;
+  message: string;
+}
+
+export interface RunItem {
+  groupPath: string[];
+  key: string;
+  name: string;
+  method: string;
+  url: string;
+  status: number | null;
+  timeMs: number | null;
+  ok: boolean;
+  error: string | null;
+  assertionResults: AssertionResult[];
+}
+
+export interface RunReport {
+  total: number;
+  passed: number;
+  failed: number;
+  items: RunItem[];
 }
 
 export interface EnvironmentFile {
@@ -205,4 +237,7 @@ export const api = {
       return { ok: false, err: e as SendErrorInfo };
     }
   },
+
+  runInterfaces: (teamKey: string, projectKey: string, groupPath: string[]) =>
+    invoke<RunReport>("run_interfaces", { teamKey, projectKey, groupPath }),
 };

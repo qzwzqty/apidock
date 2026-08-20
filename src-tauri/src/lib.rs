@@ -1,4 +1,6 @@
+mod assertions;
 mod http;
+mod runner;
 mod storage;
 mod variables;
 
@@ -369,6 +371,20 @@ async fn send_request(
     .await
 }
 
+#[tauri::command]
+async fn run_interfaces(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+) -> Result<runner::RunReport, String> {
+    let root = {
+        let guard = state.root.lock().unwrap();
+        guard.clone().ok_or("尚未选择数据根目录")?
+    };
+    runner::run_project(&root, &team_key, &project_key, Some(&group_path).filter(|g| !g.is_empty()).map(|x| x.as_slice())).await
+}
+
 fn restart_watcher(state: &AppState, root: &PathBuf) -> Result<(), String> {
     let mut guard = state.watcher.lock().unwrap();
     *guard = Some(start_watcher(root)?);
@@ -488,6 +504,7 @@ pub fn run() {
             get_project_settings,
             save_project_settings,
             send_request,
+            run_interfaces,
         ])
         .setup(move |app| {
             // 文件变更去抖后 emit，供前端刷新

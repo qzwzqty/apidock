@@ -1,23 +1,24 @@
 import { useState } from "react";
-import { Save, Send, Check, SlidersHorizontal, RotateCcw } from "lucide-react";
-import type { InterfaceFile, KeyValue } from "@/lib/api";
+import { Save, Send, Check, SlidersHorizontal, RotateCcw, Plus, Trash2 } from "lucide-react";
+import type { Assertion, InterfaceFile, KeyValue } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogFooter } from "@/components/ui/dialog";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 
-type Tab = "params" | "headers" | "body" | "auth" | "vars" | "desc";
+type Tab = "params" | "headers" | "body" | "auth" | "vars" | "assert" | "desc";
 
 const EMPTY_BODY = { mode: "none", content: "", contentType: "", form: [], filePath: null };
 const EMPTY_AUTH = { kind: "none", token: "", username: "", password: "", apiKeyName: "", apiKeyIn: "header", apiKeyValue: "" };
-// 向后兼容：旧文件缺 body/auth/variables
+// 向后兼容：旧文件缺 body/auth/variables/assertions
 function normalize(iface: InterfaceFile): InterfaceFile {
   return {
     ...iface,
     headers: iface.headers ?? [],
     query: iface.query ?? [],
     variables: iface.variables ?? [],
+    assertions: iface.assertions ?? [],
     body: { ...EMPTY_BODY, ...(iface.body ?? {}) },
     auth: { ...EMPTY_AUTH, ...(iface.auth ?? {}) },
   };
@@ -55,6 +56,7 @@ export function InterfaceEditor({
   };
   const updateList = (field: "headers" | "query" | "variables", list: KeyValue[]) =>
     update({ [field]: list } as Partial<InterfaceFile>);
+  const updateAssertions = (list: Assertion[]) => update({ assertions: list });
 
   const save = async () => {
     setSaving(true);
@@ -117,6 +119,7 @@ export function InterfaceEditor({
             ["body", "Body"],
             ["auth", "鉴权"],
             ["vars", "变量"],
+            ["assert", "断言"],
             ["desc", "说明"],
           ] as [Tab, string][]
         ).map(([k, label]) => (
@@ -154,6 +157,7 @@ export function InterfaceEditor({
         {tab === "vars" && (
           <KvList rows={base.variables} onChange={(list) => updateList("variables", list)} />
         )}
+        {tab === "assert" && <AssertionEditor rows={base.assertions} onChange={updateAssertions} />}
         {tab === "desc" && (
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">
@@ -422,5 +426,91 @@ function SendOptionsDialog({
         </DialogFooter>
       </div>
     </Dialog>
+  );
+}
+
+const OPS = [
+  "eq", "ne", "contains", "not-contains", "gt", "ge", "lt", "le", "regex",
+];
+
+function AssertionEditor({ rows, onChange }: { rows: Assertion[]; onChange: (rows: Assertion[]) => void }) {
+  const set = (i: number, a: Assertion) => onChange(rows.map((r, j) => (j === i ? a : r)));
+  return (
+    <div className="space-y-2">
+      {rows.map((a, i) => (
+        <div key={i} className="flex flex-wrap items-center gap-2 rounded-md border border-border p-2">
+          <select
+            className="h-7 w-28 rounded border border-border bg-muted px-1.5 text-xs outline-none cursor-pointer"
+            value={a.type}
+            onChange={(e) => {
+              const t = e.target.value;
+              if (t === "statusCode") set(i, { type: "statusCode", op: "eq", expected: 200 });
+              else if (t === "time") set(i, { type: "time", op: "lt", expectedMs: 1000 });
+              else if (t === "header") set(i, { type: "header", key: "Content-Type", op: "contains", expected: "" });
+              else set(i, { type: "jsonPath", path: "$.", op: "eq", expected: "" });
+            }}
+          >
+            <option value="statusCode">状态码</option>
+            <option value="header">响应头</option>
+            <option value="time">耗时</option>
+            <option value="jsonPath">JSONPath</option>
+          </select>
+
+          {a.type === "statusCode" && (
+            <>
+              <OpSel value={a.op} onChange={(op) => set(i, { ...a, op })} />
+              <Input className="h-7 w-20" type="number" value={String(a.expected)}
+                onChange={(e) => set(i, { ...a, expected: Number(e.target.value) })} />
+            </>
+          )}
+          {a.type === "time" && (
+            <>
+              <OpSel value={a.op} onChange={(op) => set(i, { ...a, op })} />
+              <Input className="h-7 w-20" type="number" value={String(a.expectedMs)}
+                onChange={(e) => set(i, { ...a, expectedMs: Number(e.target.value) })} />
+              <span className="text-xs text-muted-foreground">毫秒</span>
+            </>
+          )}
+          {a.type === "header" && (
+            <>
+              <Input className="h-7 w-32" placeholder="头名" value={a.key}
+                onChange={(e) => set(i, { ...a, key: e.target.value })} />
+              <OpSel value={a.op} onChange={(op) => set(i, { ...a, op })} />
+              <Input className="h-7 w-36" placeholder="期望值" value={a.expected}
+                onChange={(e) => set(i, { ...a, expected: e.target.value })} />
+            </>
+          )}
+          {a.type === "jsonPath" && (
+            <>
+              <Input className="h-7 w-44 font-mono" placeholder="$.data.items[0].id" value={a.path}
+                onChange={(e) => set(i, { ...a, path: e.target.value })} />
+              <OpSel value={a.op} onChange={(op) => set(i, { ...a, op })} />
+              <Input className="h-7 w-36" placeholder="期望值" value={a.expected}
+                onChange={(e) => set(i, { ...a, expected: e.target.value })} />
+            </>
+          )}
+
+          <Button size="icon" variant="ghost" className="ml-auto" title="删除断言"
+            onClick={() => onChange(rows.filter((_, j) => j !== i))}>
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      ))}
+      <Button size="sm" variant="ghost" onClick={() => onChange([...rows, { type: "statusCode", op: "eq", expected: 200 }])}>
+        <Plus className="h-3.5 w-3.5" /> 添加断言
+      </Button>
+      {rows.length === 0 && (
+        <p className="text-xs text-muted-foreground">暂无断言。一键运行时会按断言语义标记通过/失败；没有断言时仅看请求是否成功。</p>
+      )}
+    </div>
+  );
+}
+
+function OpSel({ value, onChange }: { value: string; onChange: (op: string) => void }) {
+  return (
+    <select className="h-7 w-28 rounded border border-border bg-muted px-1.5 text-xs outline-none cursor-pointer"
+      value={value} onChange={(e) => onChange(e.target.value)}>
+      {OPS.map((o) => <option key={o} value={o}>{o}</option>)}
+    </select>
   );
 }

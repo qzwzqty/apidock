@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown, ChevronRight, FolderPlus, FilePlus2, Pencil, Trash2, Folder } from "lucide-react";
+import { ChevronDown, ChevronRight, FolderPlus, FilePlus2, Pencil, Trash2, Folder, Play } from "lucide-react";
 import type { TreeNode } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,7 @@ export function InterfaceTree({
   onDeleteGroup,
   onCreateIface,
   onDeleteIface,
+  onRunGroup,
 }: {
   tree: TreeNode[];
   activeId: string | null;
@@ -29,6 +30,7 @@ export function InterfaceTree({
   onDeleteGroup: (ref: IfaceRef) => void;
   onCreateIface: (groupPath: string[]) => void;
   onDeleteIface: (ref: IfaceRef) => void;
+  onRunGroup?: (groupPath: string[]) => void;
 }) {
   return (
     <div className="select-none">
@@ -50,6 +52,7 @@ export function InterfaceTree({
           onDeleteGroup={onDeleteGroup}
           onCreateIface={onCreateIface}
           onDeleteIface={onDeleteIface}
+          onRunGroup={onRunGroup}
         />
       ))}
     </div>
@@ -67,6 +70,7 @@ function Node({
   onDeleteGroup,
   onCreateIface,
   onDeleteIface,
+  onRunGroup,
 }: {
   node: TreeNode;
   path: string[];
@@ -78,6 +82,7 @@ function Node({
   onDeleteGroup: (ref: IfaceRef) => void;
   onCreateIface: (groupPath: string[]) => void;
   onDeleteIface: (ref: IfaceRef) => void;
+  onRunGroup?: (groupPath: string[]) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
 
@@ -128,6 +133,18 @@ function Node({
         <Folder className="h-3.5 w-3.5 shrink-0 text-yellow-500/80" />
         <span className="truncate">{node.name}</span>
         <span className="ml-auto flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100">
+          {onRunGroup && (
+            <button
+              className="rounded p-0.5 hover:bg-border cursor-pointer"
+              title="运行本分组全部接口"
+              onClick={(e) => {
+                e.stopPropagation();
+                onRunGroup([...path, node.key]);
+              }}
+            >
+              <Play className="h-3 w-3" />
+            </button>
+          )}
           <button
             className="rounded p-0.5 hover:bg-border cursor-pointer"
             title="新建分组"
@@ -185,6 +202,7 @@ function Node({
               onDeleteGroup={onDeleteGroup}
               onCreateIface={onCreateIface}
               onDeleteIface={onDeleteIface}
+              onRunGroup={onRunGroup}
             />
           ))}
         </div>

@@ -408,6 +408,15 @@ pub struct Auth {
     pub api_key_value: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum Assertion {
+    StatusCode { op: String, expected: u16 },
+    Header { key: String, op: String, expected: String },
+    Time { op: String, expected_ms: u64 },
+    JsonPath { path: String, op: String, expected: String },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct InterfaceFile {
@@ -421,6 +430,7 @@ pub struct InterfaceFile {
     pub body: Body,
     pub auth: Auth,
     pub variables: Vec<KeyValue>,
+    pub assertions: Vec<Assertion>,
     pub description: String,
     // 发送选项（None 用默认值）
     pub timeout_ms: Option<u64>,
@@ -442,6 +452,7 @@ impl InterfaceFile {
             body: Body::default(),
             auth: Auth::default(),
             variables: Vec::new(),
+            assertions: Vec::new(),
             description: String::new(),
             timeout_ms: None,
             redirect_limit: None,

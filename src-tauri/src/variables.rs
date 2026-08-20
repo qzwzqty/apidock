@@ -100,7 +100,7 @@ pub fn enabled_pairs(list: &[KeyValue], vars: &BTreeMap<String, String>) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{Auth, Body, EnvironmentFile, InterfaceFile};
+    use crate::storage::{EnvironmentFile, InterfaceFile};
 
     fn kv(key: &str, value: &str) -> KeyValue {
         KeyValue { key: key.into(), value: value.into(), enabled: true }

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { FolderPlus, FilePlus2, MoreVertical, Upload, Download, X, Settings2, ChevronDown, FileText, Loader2, Play, Import } from "lucide-react";
 import { InterfaceTree, PromptDialog, type IfaceRef } from "@/components/InterfaceTree";
-import { InterfaceEditor } from "@/components/InterfaceEditor";
+import { InterfaceEditor, type EditorMode } from "@/components/InterfaceEditor";
 import { ResponseView } from "@/components/ResponseView";
 import { EnvManager } from "@/components/EnvManager";
 import { ProjectSettingsDialog } from "@/components/ProjectSettingsDialog";
@@ -45,6 +45,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
   });
   const [showImportExport, setShowImportExport] = useState(false);
   const [importExportMode, setImportExportMode] = useState<"import" | "export">("import");
+  const [editorMode, setEditorMode] = useState<EditorMode>("doc");
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -96,7 +97,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
 
   const activeTabObj = proj?.openTabs.find((t) => t.id === proj.activeTab);
   const activeDoc = activeTabObj ? proj.docs[activeTabObj.id] : undefined;
-  const showResponse = sendState.kind === "done";
+  const showResponse = sendState.kind === "done" && editorMode === "debug";
   const activeEnvName = envs.find((e) => e.id === activeEnv)?.name ?? activeEnv;
 
   const handleSend = async (doc: Parameters<typeof api.sendRequest>[3]) => {
@@ -284,6 +285,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
                 doc={activeDoc}
                 onSave={(doc) => saveDoc(tabId, teamKey, projectKey, activeTabObj.groupPath, activeTabObj.key, doc)}
                 onSend={(doc) => void handleSend(doc)}
+                onModeChange={setEditorMode}
               />
             ) : (
               <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground">

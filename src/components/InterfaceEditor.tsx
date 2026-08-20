@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { marked } from "marked";
 import { Save, Send, Check, SlidersHorizontal, RotateCcw, Plus, Trash2, Eye, PencilLine, ChevronRight, ChevronDown } from "lucide-react";
 import type { ApiParam, Assertion, Body, BodyField, InterfaceFile, JsonBody, KeyValue } from "@/lib/api";
@@ -8,6 +8,19 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogFooter } from "@/components/ui/dialog";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
+
+/** 视图模式：文档（只读）/ 编辑（可改）/ 调试（发请求） */
+export type EditorMode = "doc" | "edit" | "debug";
+
+const METHOD_COLORS: Record<string, string> = {
+  GET: "bg-emerald-600",
+  POST: "bg-orange-500",
+  PUT: "bg-blue-500",
+  PATCH: "bg-purple-500",
+  DELETE: "bg-red-500",
+  HEAD: "bg-slate-500",
+  OPTIONS: "bg-slate-500",
+};
 
 /** 参数类型（Params / Headers / 表单字段） */
 const PARAM_TYPES = ["string", "integer", "number", "boolean", "object", "array", "file"];
@@ -94,18 +107,26 @@ export function InterfaceEditor({
   doc,
   onSave,
   onSend,
+  onModeChange,
 }: {
   doc: InterfaceFile;
   onSave: (doc: InterfaceFile) => Promise<void>;
   onSend: (doc: InterfaceFile) => void;
+  onModeChange?: (mode: EditorMode) => void;
 }) {
   const [base, setBase] = useState<InterfaceFile>(normalize(doc));
+  const [mode, setMode] = useState<EditorMode>("doc");
   const [tab, setTab] = useState<Tab>("params");
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [showOpts, setShowOpts] = useState(false);
   const [preview, setPreview] = useState(false);
+
+  const switchMode = (m: EditorMode) => {
+    setMode(m);
+    onModeChange?.(m);
+  };
 
   // 外部 doc 变化（切换接口/外部刷新）时同步
   const [lastDocId, setLastDocId] = useState(doc.id);
@@ -140,34 +161,88 @@ export function InterfaceEditor({
 
   return (
     <div className="flex h-full flex-col">
-      {/* 请求行 */}
-      <div className="flex items-center gap-2 px-4 py-3">
-        <select
-          className="h-9 min-w-20 rounded-md border border-border bg-muted px-2 text-sm font-semibold text-accent outline-none focus:border-ring cursor-pointer"
-          value={base.method}
-          onChange={(e) => update({ method: e.target.value })}
-        >
-          {METHODS.map((m) => (
-            <option key={m} value={m}>{m}</option>
-          ))}
-        </select>
-        <Input
-          className="h-9 flex-1"
-          placeholder="请求地址，如 {{host}}/api/login"
-          value={base.url}
-          onChange={(e) => update({ url: e.target.value })}
-        />
-        <Button onClick={save} disabled={saving || (!dirty && !saved)} variant="outline">
-          <Save className="h-4 w-4" /> 保存
-        </Button>
-        <Button variant="ghost" title="发送选项（超时/重定向/TLS/CA）"
-          onClick={() => setShowOpts(true)}>
-          <SlidersHorizontal className="h-4 w-4" />
-        </Button>
-        <Button onClick={() => onSend(base)} className="bg-green-600 hover:bg-green-500">
-          <Send className="h-4 w-4" /> 发送
-        </Button>
+      {/* 模式标签：文档 / 编辑 / 调试（Apifox 风格） */}
+      <div className="flex h-9 shrink-0 items-center border-b border-border px-2 text-sm">
+        {(
+          [
+            ["doc", "文档"],
+            ["edit", "编辑"],
+            ["debug", "调试"],
+          ] as [EditorMode, string][]
+        ).map(([m, label]) => (
+          <button
+            key={m}
+            className={`h-full cursor-pointer px-3 transition-colors ${
+              mode === m
+                ? "border-b-2 border-accent text-accent"
+                : "border-b-2 border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => switchMode(m)}
+          >
+            {label}
+          </button>
+        ))}
+        {saved && !dirty && mode !== "doc" && (
+          <span className="ml-auto flex items-center gap-1 pr-2 text-xs text-green-500">
+            <Check className="h-3 w-3" /> 已保存
+          </span>
+        )}
       </div>
+
+      {/* 请求行 */}
+      {mode === "doc" ? (
+        <div className="flex items-center gap-2 px-4 py-3">
+          <span
+            className={`flex h-6 w-16 shrink-0 items-center justify-center rounded-md text-xs font-bold text-white ${METHOD_COLORS[base.method] ?? "bg-slate-500"}`}
+          >
+            {base.method}
+          </span>
+          <span className="min-w-0 flex-1 truncate font-mono text-sm text-foreground">
+            {base.url || "（未设置请求地址）"}
+          </span>
+          <Button variant="outline" onClick={() => switchMode("edit")}>
+            <PencilLine className="h-4 w-4" /> 编辑
+          </Button>
+          <Button onClick={() => switchMode("debug")}>调试</Button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 px-4 py-3">
+          <select
+            className="h-9 min-w-20 cursor-pointer rounded-md border border-border bg-muted px-2 text-sm font-semibold text-accent outline-none focus:border-ring"
+            value={base.method}
+            onChange={(e) => update({ method: e.target.value })}
+          >
+            {METHODS.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+          <Input
+            className="h-9 flex-1"
+            placeholder="请求地址，如 {{host}}/api/login"
+            value={base.url}
+            onChange={(e) => update({ url: e.target.value })}
+          />
+          {mode === "edit" && (
+            <Button onClick={save} disabled={saving || (!dirty && !saved)} variant="outline">
+              <Save className="h-4 w-4" /> 保存
+            </Button>
+          )}
+          <Button variant="ghost" title="发送选项（超时/重定向/TLS/CA）"
+            onClick={() => setShowOpts(true)}>
+            <SlidersHorizontal className="h-4 w-4" />
+          </Button>
+          {mode !== "debug" && (
+            <Button variant="outline" title="切换到调试标签页发送请求" onClick={() => switchMode("debug")}>
+              调试
+            </Button>
+          )}
+          {mode === "debug" && (
+            <Button onClick={() => onSend(base)} className="bg-green-600 hover:bg-green-500">
+              <Send className="h-4 w-4" /> 发送
+            </Button>
+          )}
+        </div>
+      )}
 
       <SendOptionsDialog
         iface={base}
@@ -179,7 +254,7 @@ export function InterfaceEditor({
         }}
       />
 
-      {/* 区块标签 */}
+      {/* 区块标签（编辑/调试模式） */}
       <div className="flex h-9 shrink-0 items-center border-b border-border px-2 text-sm">
         {(
           [
@@ -202,26 +277,29 @@ export function InterfaceEditor({
             {label}
           </button>
         ))}
-        {saved && !dirty && (
-          <span className="ml-auto flex items-center gap-1 pr-2 text-xs text-green-500">
-            <Check className="h-3 w-3" /> 已保存
-          </span>
-        )}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+      {mode === "doc" ? (
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+          <DocView doc={base} />
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         {tab === "params" && (
           <ParamList
             rows={base.query}
             onChange={(list) => updateList("query", list)}
             placeholderK="参数名"
             placeholderV="示例值"
+            showEnabled={mode === "debug"}
           />
         )}
         {tab === "headers" && (
-          <ParamList rows={base.headers} onChange={(list) => updateList("headers", list)} />
+          <ParamList rows={base.headers} onChange={(list) => updateList("headers", list)} showEnabled={mode === "debug"} />
         )}
-        {tab === "body" && <BodyEditor body={base.body} onChange={(body) => update({ body })} />}
+        {tab === "body" && (
+          <BodyEditor body={base.body} onChange={(body) => update({ body })} showEnabled={mode === "debug"} />
+        )}
         {tab === "auth" && <AuthEditor auth={base.auth} onChange={(auth) => update({ auth })} />}
         {tab === "vars" && (
           <KvList rows={base.variables} onChange={(list) => updateKv("variables", list)} />
@@ -253,7 +331,8 @@ export function InterfaceEditor({
             )}
           </div>
         )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -310,23 +389,27 @@ function KvList({
   );
 }
 
-/** 文档化参数表格：启用 | 参数名 | 类型 | 必填 | 示例值 | 说明（Apifox 风格） */
+/** 文档化参数表格：参数名 | 类型 | 必填 | 示例值 | 说明（Apifox 风格）；调试模式可选显示"参与发送"勾选 */
 function ParamList({
   rows,
   onChange,
   placeholderK = "参数名",
   placeholderV = "示例值",
+  showEnabled = false,
 }: {
   rows: ApiParam[];
   onChange: (rows: ApiParam[]) => void;
   placeholderK?: string;
   placeholderV?: string;
+  /** 调试模式：是否参与发送（启停权归调试模式，不持久化进文档） */
+  showEnabled?: boolean;
 }) {
   const setRow = (i: number, patch: Partial<ApiParam>) =>
     onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        {showEnabled && <span className="w-5 shrink-0" title="是否参与发送" />}
         <span className="w-44">参数名</span>
         <span className="w-24">类型</span>
         <span className="w-14 shrink-0">必填</span>
@@ -341,6 +424,17 @@ function ParamList({
       )}
       {rows.map((row, i) => (
         <div key={i} className="flex items-center gap-1.5">
+          {showEnabled && (
+            <span className="flex w-5 shrink-0 items-center justify-center">
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5 cursor-pointer accent-(--ring)"
+                title="是否参与发送"
+                checked={row.enabled}
+                onChange={(e) => setRow(i, { enabled: e.target.checked })}
+              />
+            </span>
+          )}
           <Input
             className="h-7 w-44"
             placeholder={placeholderK}
@@ -396,9 +490,11 @@ function ParamList({
 function BodyEditor({
   body,
   onChange,
+  showEnabled = false,
 }: {
   body: InterfaceFile["body"];
   onChange: (body: InterfaceFile["body"]) => void;
+  showEnabled?: boolean;
 }) {
   const [preview, setPreview] = useState(false);
   return (
@@ -470,6 +566,7 @@ function BodyEditor({
           onChange={(form) => onChange({ ...body, form })}
           placeholderK="字段名"
           placeholderV={body.mode === "form-data" ? "值 或 @文件路径" : "示例值"}
+          showEnabled={showEnabled}
         />
       )}
 
@@ -886,4 +983,162 @@ function OpSel({ value, onChange }: { value: string; onChange: (op: string) => v
       {OPS.map((o) => <option key={o} value={o}>{o}</option>)}
     </select>
   );
+}
+
+/** 文档（只读）视图：Apifox 风格，仅展示接口文档内容 */
+function DocView({ doc }: { doc: InterfaceFile }) {
+  const hasJson = doc.body.mode === "json" && !isJsonBodyEmpty(doc.body.json);
+  return (
+    <div className="max-w-3xl space-y-6 pb-8">
+      <DocSection title="接口说明">
+        {doc.description.trim() ? (
+          <div
+            className="markdown-body prose prose-sm max-w-none text-sm text-foreground"
+            dangerouslySetInnerHTML={{ __html: marked.parse(doc.description) as string }}
+          />
+        ) : (
+          <p className="text-sm text-muted-foreground">暂无说明。</p>
+        )}
+      </DocSection>
+
+      <DocSection title="查询参数" count={doc.query.length}>
+        {doc.query.length > 0 ? (
+          <DocTable rows={doc.query} mode="param" />
+        ) : (
+          <p className="text-sm text-muted-foreground">暂无查询参数。</p>
+        )}
+      </DocSection>
+
+      <DocSection title="请求头" count={doc.headers.length}>
+        {doc.headers.length > 0 ? (
+          <DocTable rows={doc.headers} mode="header" />
+        ) : (
+          <p className="text-sm text-muted-foreground">暂无请求头。</p>
+        )}
+      </DocSection>
+
+      <DocSection title="请求体">
+        {doc.body.mode === "json" && (
+          <pre className="overflow-auto rounded-md border border-border bg-muted p-3 font-mono text-xs text-foreground">
+            {hasJson ? JSON.stringify(jsonBodyToValue(doc.body.json), null, 2) : "{}"}
+          </pre>
+        )}
+        {doc.body.mode === "raw" && (
+          <pre className="overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted p-3 font-mono text-xs text-foreground">
+            {doc.body.content || "（无内容）"}
+          </pre>
+        )}
+        {(doc.body.mode === "urlencoded" || doc.body.mode === "form-data") && (
+          <DocTable rows={doc.body.form} mode="param" />
+        )}
+        {doc.body.mode === "file" && (
+          <p className="font-mono text-sm text-foreground">{doc.body.filePath || "（未设置文件路径）"}</p>
+        )}
+        {doc.body.mode === "none" && <p className="text-sm text-muted-foreground">无请求体。</p>}
+      </DocSection>
+
+      <DocSection title="鉴权">
+        <p className="text-sm text-foreground">{authSummary(doc.auth)}</p>
+      </DocSection>
+
+      {doc.assertions.length > 0 && (
+        <DocSection title="断言" count={doc.assertions.length}>
+          <ul className="list-disc space-y-0.5 pl-4 text-sm">
+            {doc.assertions.map((a, i) => (
+              <li key={i} className="text-foreground">{assertionText(a)}</li>
+            ))}
+          </ul>
+        </DocSection>
+      )}
+    </div>
+  );
+}
+
+function DocSection({ title, count, children }: { title: string; count?: number; children: ReactNode }) {
+  return (
+    <section>
+      <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-foreground">
+        {title}
+        {count != null && count > 0 && (
+          <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-normal text-muted-foreground">{count}</span>
+        )}
+      </h3>
+      {children}
+    </section>
+  );
+}
+
+/** 只读参数表：param 模式含类型/必填列，header 模式仅名称/示例值/说明 */
+function DocTable({ rows, mode }: { rows: ApiParam[]; mode: "param" | "header" }) {
+  return (
+    <table className="w-full border-collapse text-sm">
+      <thead>
+        <tr className="border-b border-border text-left text-xs text-muted-foreground">
+          <th className="py-1.5 pr-3 font-normal">参数名</th>
+          {mode === "param" && (
+            <>
+              <th className="w-24 py-1.5 pr-3 font-normal">类型</th>
+              <th className="w-12 py-1.5 pr-3 font-normal">必填</th>
+            </>
+          )}
+          <th className="py-1.5 pr-3 font-normal">示例值</th>
+          <th className="py-1.5 font-normal">说明</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r, i) => (
+          <tr key={i} className="border-b border-border/60">
+            <td className="py-1.5 pr-3 font-mono text-foreground">{r.key || "—"}</td>
+            {mode === "param" && (
+              <>
+                <td className="w-24 py-1.5 pr-3 text-muted-foreground">{r.type || "string"}</td>
+                <td className="w-12 py-1.5 pr-3 text-red-500">{r.required ? "*" : ""}</td>
+              </>
+            )}
+            <td className="py-1.5 pr-3 font-mono text-muted-foreground">{r.example || "—"}</td>
+            <td className="py-1.5 text-muted-foreground">{r.description || "—"}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function authSummary(a: InterfaceFile["auth"]): string {
+  switch (a.kind) {
+    case "bearer":
+      return a.token ? `Bearer Token：${a.token}` : "Bearer Token（未设置 Token）";
+    case "basic":
+      return `Basic Auth：${a.username || "（未设置用户名）"} / ${a.password ? "••••••" : "（未设置密码）"}`;
+    case "api-key":
+      return `API Key：${a.apiKeyName || "（未设置）"} = ${a.apiKeyValue}（${a.apiKeyIn === "query" ? "查询参数" : "请求头"}）`;
+    default:
+      return "无鉴权";
+  }
+}
+
+const OP_TEXT: Record<string, string> = {
+  eq: "=",
+  ne: "≠",
+  contains: "包含",
+  "not-contains": "不包含",
+  gt: ">",
+  ge: "≥",
+  lt: "<",
+  le: "≤",
+  regex: "匹配",
+};
+
+function assertionText(a: Assertion): string {
+  const op = OP_TEXT[a.op] ?? a.op;
+  switch (a.type) {
+    case "statusCode":
+      return `状态码 ${op} ${a.expected}`;
+    case "header":
+      return `响应头「${a.key}」${op}「${a.expected}」`;
+    case "time":
+      return `耗时 ${op} ${a.expectedMs} 毫秒`;
+    case "jsonPath":
+      return `JSONPath「${a.path}」${op}「${a.expected}」`;
+  }
 }

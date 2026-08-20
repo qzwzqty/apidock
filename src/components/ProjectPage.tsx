@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { FolderPlus, FilePlus2, X, Settings2, ChevronDown, FileText, Loader2, Play } from "lucide-react";
+import { FolderPlus, FilePlus2, X, Settings2, ChevronDown, FileText, Loader2, Play, Import } from "lucide-react";
 import { InterfaceTree, PromptDialog, type IfaceRef } from "@/components/InterfaceTree";
 import { InterfaceEditor } from "@/components/InterfaceEditor";
 import { ResponseView } from "@/components/ResponseView";
 import { EnvManager } from "@/components/EnvManager";
 import { ProjectSettingsDialog } from "@/components/ProjectSettingsDialog";
 import { RunReportDialog } from "@/components/RunReportDialog";
+import { ImportExportDialog } from "@/components/ImportExportDialog";
 import { api, type EnvironmentSummary, type RunReport, type SendOutcome } from "@/lib/api";
 import { useProject } from "@/lib/project";
 import { cn } from "@/lib/utils";
@@ -38,6 +39,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
     report: null,
     open: false,
   });
+  const [showImportExport, setShowImportExport] = useState(false);
 
   const loadEnvs = async () => {
     const [list, settings] = await Promise.all([
@@ -153,6 +155,13 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
             title="一键运行项目下全部接口（含断言校验）"
           >
             <Play className="h-3.5 w-3.5" /> 运行全部
+          </button>
+          <button
+            className="flex h-full cursor-pointer items-center gap-1.5 px-3 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            onClick={() => setShowImportExport(true)}
+            title="OpenAPI / Postman 导入导出"
+          >
+            <Import className="h-3.5 w-3.5" /> 导入/导出
           </button>
           <button
             className="ml-auto flex h-full cursor-pointer items-center gap-2 px-3 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
@@ -298,6 +307,17 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
         running={runState.running}
         report={runState.report}
         onClose={() => setRunState((s) => ({ ...s, open: false }))}
+      />
+      <ImportExportDialog
+        teamKey={teamKey}
+        projectKey={projectKey}
+        open={showImportExport}
+        onClose={() => setShowImportExport(false)}
+        onImported={async () => {
+          setRunState((s) => ({ ...s, open: false }));
+          await useProject.getState().loadTree(tabId, teamKey, projectKey);
+          setShowImportExport(false);
+        }}
       />
     </div>
   );

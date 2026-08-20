@@ -1,5 +1,6 @@
 mod assertions;
 mod http;
+mod imports;
 mod runner;
 mod storage;
 mod variables;
@@ -385,6 +386,91 @@ async fn run_interfaces(
     runner::run_project(&root, &team_key, &project_key, Some(&group_path).filter(|g| !g.is_empty()).map(|x| x.as_slice())).await
 }
 
+// ----- 导入 / 导出 -----
+
+fn detect_spec_kind(content: &str) -> (&'static str, bool) {
+    let trimmed = content.trim_start();
+    if trimmed.starts_with('{') {
+        if trimmed.contains("\"openapi\"") && trimmed.contains("\"paths\"") {
+            return ("openapi", false);
+        }
+        if trimmed.contains("\"item\"") && trimmed.contains("\"info\"") {
+            return ("postman", false);
+        }
+        ("openapi", false)
+    } else {
+        // 尝试 YAML
+        ("openapi", true)
+    }
+}
+
+#[tauri::command]
+async fn import_spec_into_project(
+    state: State<'_, AppState>,
+    path: String,
+    team_key: String,
+    project_key: String,
+) -> Result<(imports::ImportReport, String), String> {
+    let root = {
+        let guard = state.root.lock().unwrap();
+        guard.clone().ok_or("尚未选择数据根目录")?
+    };
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败：{e}"))?;
+    let (kind, is_yaml) = detect_spec_kind(&content);
+    let (name, ifaces) = match kind {
+        "postman" => imports::parse_postman(&content)?,
+        _ => imports::parse_openapi(&content, is_yaml)?,
+    };
+    let (report, name) = match imports::import_into_project(&root, &team_key, &project_key, &ifaces) {
+        Ok(r) => (r, name),
+        Err(e) => return Err(e),
+    };
+    Ok((report, name))
+}
+
+#[tauri::command]
+async fn import_spec_new_project(
+    state: State<'_, AppState>,
+    path: String,
+    team_key: String,
+) -> Result<(imports::ImportReport, String), String> {
+    let root = {
+        let guard = state.root.lock().unwrap();
+        guard.clone().ok_or("尚未选择数据根目录")?
+    };
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败：{e}"))?;
+    let (kind, is_yaml) = detect_spec_kind(&content);
+    let (name, ifaces) = match kind {
+        "postman" => imports::parse_postman(&content)?,
+        _ => imports::parse_openapi(&content, is_yaml)?,
+    };
+    let project_key = storage::sanitize_key(&name);
+    let project_key = if project_key.is_empty() { format!("imported-{}", uuid::Uuid::new_v4()) } else { project_key };
+    if storage::list_projects(&root, &team_key).iter().any(|p| p.key == project_key) {
+        return Err(format!("已存在同名项目键 {project_key}，请改为导入到现有项目"));
+    }
+    storage::create_project(&root, &team_key, &project_key, &name)?;
+    let report = imports::import_into_project(&root, &team_key, &project_key, &ifaces)?;
+    Ok((report, name))
+}
+
+#[tauri::command]
+async fn export_openapi_file(
+    state: State<'_, AppState>,
+    path: String,
+    team_key: String,
+    project_key: String,
+    yaml: bool,
+) -> Result<Vec<String>, String> {
+    let root = {
+        let guard = state.root.lock().unwrap();
+        guard.clone().ok_or("尚未选择数据根目录")?
+    };
+    let out = imports::export_openapi(&root, &team_key, &project_key, yaml)?;
+    std::fs::write(&path, out.content).map_err(|e| format!("写入文件失败：{e}"))?;
+    Ok(out.warnings)
+}
+
 fn restart_watcher(state: &AppState, root: &PathBuf) -> Result<(), String> {
     let mut guard = state.watcher.lock().unwrap();
     *guard = Some(start_watcher(root)?);
@@ -505,6 +591,9 @@ pub fn run() {
             save_project_settings,
             send_request,
             run_interfaces,
+            import_spec_into_project,
+            import_spec_new_project,
+            export_openapi_file,
         ])
         .setup(move |app| {
             // 文件变更去抖后 emit，供前端刷新

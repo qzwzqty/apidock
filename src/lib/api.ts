@@ -109,6 +109,12 @@ export interface RunReport {
   items: RunItem[];
 }
 
+export interface ImportReport {
+  total: number;
+  skipped: number;
+  warnings: string[];
+}
+
 export interface EnvironmentFile {
   version: number;
   id: string;
@@ -240,4 +246,11 @@ export const api = {
 
   runInterfaces: (teamKey: string, projectKey: string, groupPath: string[]) =>
     invoke<RunReport>("run_interfaces", { teamKey, projectKey, groupPath }),
+
+  importSpecIntoProject: (path: string, teamKey: string, projectKey: string) =>
+    invoke<[ImportReport, string]>("import_spec_into_project", { path, teamKey, projectKey }),
+  importSpecNewProject: (path: string, teamKey: string) =>
+    invoke<[ImportReport, string]>("import_spec_new_project", { path, teamKey }),
+  exportOpenapiFile: (path: string, teamKey: string, projectKey: string, yaml: boolean) =>
+    invoke<string[]>("export_openapi_file", { path, teamKey, projectKey, yaml }),
 };

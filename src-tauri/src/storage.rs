@@ -439,6 +439,8 @@ impl ApiParam {
 #[serde(rename_all = "camelCase", default)]
 pub struct BodyField {
     pub key: String,
+    /// 中文名（字段标题，用于文档展示）
+    pub name: String,
     /// 是否必填
     pub required: bool,
     /// 字段类型：object | array | string | integer | number | boolean | null
@@ -458,6 +460,7 @@ impl BodyField {
     pub fn new(key: &str) -> Self {
         Self {
             key: key.to_string(),
+            name: String::new(),
             required: false,
             field_type: "string".into(),
             example: String::new(),
@@ -468,30 +471,65 @@ impl BodyField {
     }
 }
 
-/// JSON 请求体：根节点类型 + 字段树
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase", default)]
+/// JSON 请求体结构树：根节点与子节点同构（同一字段类型，可任意嵌套）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JsonBody {
-    /// 根节点类型：object | array
-    pub root_type: String,
-    /// 根为 object 时的顶层字段
-    pub fields: Vec<BodyField>,
-    /// 根为 array 时的元素定义
-    pub items: Option<Box<BodyField>>,
+    /// 根节点字段（key 固定为空，作为载荷本身）
+    pub root: BodyField,
 }
 
 impl JsonBody {
-    /// 根节点真实类型（空/未知按 object 处理）
-    pub fn root_type_or_object(&self) -> &str {
-        if self.root_type == "array" {
-            "array"
-        } else {
-            "object"
-        }
+    pub fn new_root(field_type: &str) -> Self {
+        Self { root: BodyField { field_type: field_type.into(), ..BodyField::new("") } }
     }
 
+    /// 结构树是否"无内容"：类型为空，或仅是最初始的空 object 根（未定义任何字段）
     pub fn is_empty(&self) -> bool {
-        self.root_type.is_empty() && self.fields.is_empty() && self.items.is_none()
+        let r = &self.root;
+        r.field_type.is_empty()
+            || (r.field_type == "object"
+                && r.name.is_empty()
+                && r.example.is_empty()
+                && r.description.is_empty()
+                && !r.required
+                && r.children.is_empty()
+                && r.items.is_none())
+    }
+}
+
+impl Default for JsonBody {
+    fn default() -> Self {
+        Self::new_root("object")
+    }
+}
+
+/// 兼容旧文件：旧结构为 { rootType, fields, items }（根节点仅 object/array）
+impl<'de> Deserialize<'de> for JsonBody {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize, Default)]
+        #[serde(rename_all = "camelCase", default)]
+        struct Legacy {
+            root_type: String,
+            fields: Vec<BodyField>,
+            items: Option<Box<BodyField>>,
+            root: Option<BodyField>,
+        }
+        let raw = Legacy::deserialize(d)?;
+        if let Some(root) = raw.root {
+            return Ok(JsonBody { root });
+        }
+        if raw.root_type == "array" {
+            Ok(JsonBody {
+                root: BodyField { field_type: "array".into(), items: raw.items, ..BodyField::new("") },
+            })
+        } else if !raw.root_type.is_empty() || !raw.fields.is_empty() {
+            Ok(JsonBody {
+                root: BodyField { field_type: "object".into(), children: raw.fields, ..BodyField::new("") },
+            })
+        } else {
+            Ok(JsonBody::default())
+        }
     }
 }
 
@@ -512,20 +550,7 @@ pub struct Body {
 impl Body {
     /// 生成一份内部确定的 JSON 示例载荷（不做变量替换），用于预览与保存 content
     fn json_example_value(json: &JsonBody) -> Value {
-        if json.root_type_or_object() == "array" {
-            match &json.items {
-                Some(item) => Value::Array(vec![Self::field_value(item)]),
-                None => Value::Array(Vec::new()),
-            }
-        } else {
-            let mut obj = serde_json::Map::new();
-            for f in &json.fields {
-                if !f.key.trim().is_empty() {
-                    obj.insert(f.key.clone(), Self::field_value(f));
-                }
-            }
-            Value::Object(obj)
-        }
+        Self::field_value(&json.root)
     }
 
     pub fn field_value(f: &BodyField) -> Value {
@@ -578,27 +603,13 @@ impl Body {
         let Ok(v) = serde_json::from_str::<Value>(&self.content) else {
             return;
         };
-        self.json = json_value_to_json_body(&v);
+        self.json = JsonBody { root: json_value_to_field(&v).unwrap_or_default() };
     }
 }
 
 fn parse_int(s: &str) -> Option<i64> {
     let t = s.trim();
     t.parse::<i64>().ok().or_else(|| t.parse::<f64>().ok().map(|f| f.trunc() as i64))
-}
-
-/// 把任意 JSON Value 转换为结构树（用于旧 content 迁移与 OpenAPI 示例回填）
-fn json_value_to_json_body(v: &Value) -> JsonBody {
-    match json_value_to_field(v) {
-        Some(f) => {
-            if f.field_type == "array" {
-                JsonBody { root_type: "array".into(), fields: Vec::new(), items: f.items }
-            } else {
-                JsonBody { root_type: "object".into(), fields: f.children, items: None }
-            }
-        }
-        None => JsonBody::default(),
-    }
 }
 
 fn json_value_to_field(v: &Value) -> Option<BodyField> {
@@ -1639,15 +1650,15 @@ mod tests {
             ..Default::default()
         };
         body.migrate_json_content();
-        assert_eq!(body.json.root_type, "object");
-        assert_eq!(body.json.fields.len(), 5);
-        let id = body.json.fields.iter().find(|f| f.key == "id").unwrap();
+        assert_eq!(body.json.root.field_type, "object");
+        assert_eq!(body.json.root.children.len(), 5);
+        let id = body.json.root.children.iter().find(|f| f.key == "id").unwrap();
         assert_eq!(id.field_type, "integer");
         assert_eq!(id.example, "1");
-        let tags = body.json.fields.iter().find(|f| f.key == "tags").unwrap();
+        let tags = body.json.root.children.iter().find(|f| f.key == "tags").unwrap();
         assert_eq!(tags.field_type, "array");
         assert!(tags.items.is_some());
-        let ok = body.json.fields.iter().find(|f| f.key == "ok").unwrap();
+        let ok = body.json.root.children.iter().find(|f| f.key == "ok").unwrap();
         assert_eq!(ok.field_type, "boolean");
         // 生成示例载荷
         assert_eq!(body.json_example_payload().is_some(), true);
@@ -1659,6 +1670,31 @@ mod tests {
         let mut raw = Body { mode: "raw".into(), content: "{\"a\":1}".into(), ..Default::default() };
         raw.migrate_json_content();
         assert!(raw.json.is_empty());
+    }
+
+    #[test]
+    fn json_body_root_field_serializes_and_reads_back() {
+        // 根节点为叶子类型（非 object/array）
+        let mut body = Body {
+            mode: "json".into(),
+            json: JsonBody { root: BodyField { field_type: "string".into(), example: "{{host}}/api".into(), ..BodyField::new("") } },
+            ..Default::default()
+        };
+        assert_eq!(Body::field_value(&body.json.root), serde_json::json!("{{host}}/api"));
+        let payload = body.json_example_payload().unwrap();
+        assert_eq!(payload, "\"{{host}}/api\"");
+        // 序列化 → 反序列化往返
+        let text = serde_json::to_string(&body).unwrap();
+        let back: Body = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.json.root.field_type, "string");
+        assert_eq!(back.json.root.example, "{{host}}/api");
+        // 旧格式（rootType/fields/items）反序列化兼容
+        let legacy = r#"{"mode":"json","content":"","contentType":"","json":{"rootType":"array","fields":[],"items":{"key":"","name":"","required":false,"type":"integer","example":"3","description":"","children":[],"items":null}},"form":[],"filePath":null}"#;
+        let legacy_body: Body = serde_json::from_str(legacy).unwrap();
+        assert_eq!(legacy_body.json.root.field_type, "array");
+        let items = legacy_body.json.root.items.as_ref().unwrap();
+        assert_eq!(items.field_type, "integer");
+        assert_eq!(items.example, "3");
     }
 
     #[test]

@@ -111,14 +111,7 @@ fn schema_example(schema: &Value, components: &Value) -> Value {
 
 /// JSON Schema → 请求体结构树（Apifox 式字段树）
 fn schema_to_json_body(schema: &Value, components: &Value) -> storage::JsonBody {
-    let Some(f) = schema_to_field(schema, components) else {
-        return storage::JsonBody::default();
-    };
-    if f.field_type == "array" {
-        storage::JsonBody { root_type: "array".into(), fields: Vec::new(), items: f.items }
-    } else {
-        storage::JsonBody { root_type: "object".into(), fields: f.children, items: None }
-    }
+    storage::JsonBody { root: schema_to_field(schema, components).unwrap_or_default() }
 }
 
 fn schema_to_field(schema: &Value, components: &Value) -> Option<storage::BodyField> {
@@ -142,6 +135,7 @@ fn schema_to_field(schema: &Value, components: &Value) -> Option<storage::BodyFi
         return None;
     }
     let description = schema.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string();
+    let title = schema.get("title").and_then(|d| d.as_str()).unwrap_or("").to_string();
     let field_type = schema
         .get("type")
         .and_then(|t| t.as_str())
@@ -171,6 +165,7 @@ fn schema_to_field(schema: &Value, components: &Value) -> Option<storage::BodyFi
             }
             Some(storage::BodyField {
                 field_type: "object".into(),
+                name: title,
                 description,
                 children,
                 ..Default::default()
@@ -181,7 +176,7 @@ fn schema_to_field(schema: &Value, components: &Value) -> Option<storage::BodyFi
                 .get("items")
                 .and_then(|i| schema_to_field(i, components))
                 .map(Box::new);
-            Some(storage::BodyField { field_type: "array".into(), description, items, ..Default::default() })
+            Some(storage::BodyField { field_type: "array".into(), name: title, description, items, ..Default::default() })
         }
         t => {
             let example = schema
@@ -195,6 +190,7 @@ fn schema_to_field(schema: &Value, components: &Value) -> Option<storage::BodyFi
                 .unwrap_or_default();
             Some(storage::BodyField {
                 field_type: t.to_string(),
+                name: title,
                 description,
                 example,
                 ..Default::default()
@@ -208,23 +204,7 @@ fn json_value_to_body(content_str: &str) -> storage::JsonBody {
     let Ok(v) = serde_json::from_str::<Value>(content_str) else {
         return storage::JsonBody::default();
     };
-    if let Some(obj) = v.as_object() {
-        let mut fields = Vec::new();
-        for (k, sub) in obj {
-            let mut f = value_to_field(sub).unwrap_or_else(|| storage::BodyField::new(k));
-            f.key = k.clone();
-            fields.push(f);
-        }
-        storage::JsonBody { root_type: "object".into(), fields, items: None }
-    } else if let Some(arr) = v.as_array() {
-        storage::JsonBody {
-            root_type: "array".into(),
-            fields: Vec::new(),
-            items: arr.first().and_then(value_to_field).map(Box::new),
-        }
-    } else {
-        storage::JsonBody::default()
-    }
+    storage::JsonBody { root: value_to_field(&v).unwrap_or_default() }
 }
 
 fn value_to_field(v: &Value) -> Option<storage::BodyField> {
@@ -945,34 +925,10 @@ fn schema_type_of(t: &str) -> &str {
 
 /// 结构树 → OpenAPI JSON Schema
 fn schema_of_json_body(json: &storage::JsonBody) -> Value {
-    if json.root_type_or_object() == "array" {
-        let mut arr = json!({ "type": "array" });
-        if let Some(item) = &json.items {
-            if let Some(sub) = schema_of_field(item) {
-                arr["items"] = sub;
-            }
-        }
-        arr
-    } else {
-        let mut props = serde_json::Map::new();
-        let mut required = Vec::new();
-        for c in &json.fields {
-            if c.key.trim().is_empty() {
-                continue;
-            }
-            if let Some(sub) = schema_of_field(c) {
-                props.insert(c.key.clone(), sub);
-            }
-            if c.required {
-                required.push(json!(c.key));
-            }
-        }
-        let mut obj = json!({ "type": "object", "properties": props });
-        if !required.is_empty() {
-            obj["required"] = json!(required);
-        }
-        obj
+    if json.root.field_type.is_empty() {
+        return json!({});
     }
+    schema_of_field(&json.root).unwrap_or(json!({}))
 }
 
 fn schema_of_field(f: &storage::BodyField) -> Option<Value> {
@@ -1017,6 +973,9 @@ fn schema_of_field(f: &storage::BodyField) -> Option<Value> {
     };
     if !f.description.is_empty() {
         node["description"] = json!(f.description);
+    }
+    if !f.name.is_empty() {
+        node["title"] = json!(f.name);
     }
     Some(node)
 }

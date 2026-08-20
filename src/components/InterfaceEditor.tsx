@@ -2,7 +2,7 @@ import { useState } from "react";
 import { marked } from "marked";
 import { Save, Send, Check, SlidersHorizontal, RotateCcw, Plus, Trash2, Eye, PencilLine, ChevronRight, ChevronDown } from "lucide-react";
 import type { ApiParam, Assertion, Body, BodyField, InterfaceFile, JsonBody, KeyValue } from "@/lib/api";
-import { EMPTY_BODY, newApiParam, newBodyField, jsonBodyToValue } from "@/lib/api";
+import { EMPTY_BODY, isJsonBodyEmpty, newApiParam, newBodyField, jsonBodyToValue } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogFooter } from "@/components/ui/dialog";
@@ -30,16 +30,12 @@ const EMPTY_AUTH = { kind: "none", token: "", username: "", password: "", apiKey
 // 向后兼容：旧文件缺 body/auth/variables/assertions；旧 json 文本 content 迁移进结构树
 function normalize(iface: InterfaceFile): InterfaceFile {
   const body: Body = { ...EMPTY_BODY, ...(iface.body ?? {}) };
-  body.json = body.json ?? { rootType: "", fields: [], items: null };
+  body.json = legacyJsonToBody(body.json);
   body.form = (body.form ?? []).map(legacyParam);
-  if (body.mode === "json" && body.json.rootType === "" && !body.json.fields.length && body.content.trim()) {
+  if (body.mode === "json" && isJsonBodyEmpty(body.json) && body.content.trim()) {
     try {
       const v = JSON.parse(body.content);
-      if (Array.isArray(v)) {
-        body.json = { rootType: "array", fields: [], items: v.length ? toField(v[0]) : newBodyField() };
-      } else if (v && typeof v === "object") {
-        body.json = { rootType: "object", fields: Object.entries(v as Record<string, unknown>).map(([k, val]) => ({ ...toField(val), key: k })), items: null };
-      }
+      body.json = { root: toField(v) };
     } catch {
       /* 非合法 JSON 保持原样（仍可按 raw 发送） */
     }
@@ -53,6 +49,19 @@ function normalize(iface: InterfaceFile): InterfaceFile {
     body,
     auth: { ...EMPTY_AUTH, ...(iface.auth ?? {}) },
   };
+}
+
+/** 旧版 {rootType,fields,items} 结构的 json body → 根节点同构结构 */
+function legacyJsonToBody(json: JsonBody | { rootType?: string; fields?: BodyField[]; items?: BodyField | null }): JsonBody {
+  if (json && "root" in json && json.root) return json as JsonBody;
+  const anyJ = json as { rootType?: string; fields?: BodyField[]; items?: BodyField | null };
+  if (!anyJ || (!anyJ.rootType && !(anyJ.fields ?? []).length && !anyJ.items)) {
+    return { root: newBodyField("") };
+  }
+  if (anyJ.rootType === "array") {
+    return { root: { ...newBodyField(""), type: "array", items: anyJ.items ?? null } };
+  }
+  return { root: { ...newBodyField(""), type: "object", children: anyJ.fields ?? [] } };
 }
 
 /** 旧版 {key,value,enabled} 参数自动升级为文档化参数 */
@@ -69,16 +78,16 @@ function legacyParam(p: ApiParam | KeyValue): ApiParam {
 }
 
 function toField(v: unknown): BodyField {
-  if (v === null) return { key: "", required: false, type: "null", example: "null", description: "", children: [], items: null };
+  if (v === null) return { key: "", name: "", required: false, type: "null", example: "null", description: "", children: [], items: null };
   if (Array.isArray(v)) {
-    return { key: "", required: false, type: "array", example: "", description: "", children: [], items: v.length ? toField(v[0]) : newBodyField() };
+    return { key: "", name: "", required: false, type: "array", example: "", description: "", children: [], items: v.length ? toField(v[0]) : newBodyField() };
   }
   if (typeof v === "object") {
     const children = Object.entries(v as Record<string, unknown>).map(([k, val]) => ({ ...toField(val), key: k }));
-    return { key: "", required: false, type: "object", example: "", description: "", children, items: null };
+    return { key: "", name: "", required: false, type: "object", example: "", description: "", children, items: null };
   }
   const type = typeof v === "string" ? "string" : typeof v === "boolean" ? "boolean" : Number.isInteger(v) ? "integer" : "number";
-  return { key: "", required: false, type, example: String(v), description: "", children: [], items: null };
+  return { key: "", name: "", required: false, type, example: String(v), description: "", children: [], items: null };
 }
 
 export function InterfaceEditor({
@@ -315,18 +324,22 @@ function ParamList({
 }) {
   const setRow = (i: number, patch: Partial<ApiParam>) =>
     onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
-  if (rows.length === 0) {
-    return (
-      <div className="text-xs text-muted-foreground">
-        暂无参数。定义接口的请求参数（名称、类型、是否必填、示例值与说明），保存后即成为接口文档。
-        <Button size="sm" variant="ghost" className="mt-2" onClick={() => onChange([newApiParam()])}>
-          <Plus className="h-3.5 w-3.5" /> 添加参数
-        </Button>
-      </div>
-    );
-  }
   return (
     <div className="space-y-1">
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <span className="w-3.5 shrink-0" title="发送时是否携带" />
+        <span className="w-44">参数名</span>
+        <span className="w-24">类型</span>
+        <span className="w-14 shrink-0">必填</span>
+        <span className="flex-1">{placeholderV}</span>
+        <span className="flex-1">说明</span>
+        <span className="w-8 shrink-0" />
+      </div>
+      {rows.length === 0 && (
+        <p className="py-1 text-xs text-muted-foreground">
+          暂无参数。定义接口的请求参数（名称、类型、是否必填、示例值与说明），保存后即成为接口文档。
+        </p>
+      )}
       {rows.map((row, i) => (
         <div key={i} className="flex items-center gap-1.5">
           <input
@@ -358,7 +371,6 @@ function ParamList({
               checked={row.required}
               onChange={(e) => setRow(i, { required: e.target.checked })}
             />
-            必填
           </label>
           <Input
             className="h-7 flex-1"
@@ -496,101 +508,43 @@ function JsonBodyEditor({
   json: JsonBody;
   onChange: (json: JsonBody) => void;
 }) {
-  const setRootType = (t: "object" | "array") => {
-    if (json.rootType === t) return;
-    onChange({
-      ...json,
-      rootType: t,
-      fields: t === "object" ? json.fields : json.fields,
-      items: t === "array" ? json.items ?? newBodyField() : json.items,
-    });
-  };
-  const isObject = json.rootType !== "array";
   return (
     <div className="space-y-1">
-      <div className="flex items-center gap-1">
-        <label className="shrink-0 text-xs text-muted-foreground">根节点类型</label>
-        {(["object", "array"] as const).map((t) => (
-          <button
-            key={t}
-            className={`h-6 rounded border px-2 text-xs transition-colors cursor-pointer ${
-              isObject === (t === "object")
-                ? "border-ring bg-accent/10 text-accent"
-                : "border-border bg-muted text-muted-foreground hover:text-foreground"
-            }`}
-            onClick={() => setRootType(t)}
-          >
-            {t}
-          </button>
-        ))}
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <span className="w-5 shrink-0" />
+        <span className="w-44">字段名</span>
+        <span className="w-24">类型</span>
+        <span className="w-32">中文名</span>
+        <span className="w-14 shrink-0">必填</span>
+        <span className="flex-1">示例值</span>
+        <span className="w-48">说明</span>
+        <span className="w-8 shrink-0" />
       </div>
-
-      {isObject &&
-        (json.fields.length === 0 ? (
-          <p className="py-1 text-xs text-muted-foreground">
-            暂无字段。添加字段定义请求体 JSON 结构（类型、必填、示例值、说明）。
-          </p>
-        ) : (
-          json.fields.map((f, i) => (
-            <JsonFieldRow
-              key={i}
-              f={f}
-              depth={0}
-              onChange={(nf) => {
-                const fields = [...json.fields];
-                fields[i] = nf;
-                onChange({ ...json, fields });
-              }}
-              onDelete={() => onChange({ ...json, fields: json.fields.filter((_, j) => j !== i) })}
-              onAddChild={() => {
-                const fields = [...json.fields];
-                fields[i] = { ...f, children: [...f.children, newBodyField()] };
-                onChange({ ...json, fields });
-              }}
-            />
-          ))
-        ))}
-      {isObject && (
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => onChange({ ...json, fields: [...json.fields, newBodyField()] })}
-        >
-          <Plus className="h-3.5 w-3.5" /> 添加字段
-        </Button>
-      )}
-
-      {!isObject &&
-        (json.items ? (
-          <JsonFieldRow
-            f={json.items}
-            depth={0}
-            isItems
-            onChange={(nf) => onChange({ ...json, items: nf })}
-            onDelete={() => onChange({ ...json, items: null })}
-            onAddChild={() => onChange({ ...json, items: { ...json.items!, children: [...(json.items?.children ?? []), newBodyField()] } })}
-          />
-        ) : (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => onChange({ ...json, items: newBodyField() })}
-          >
-            <Plus className="h-3.5 w-3.5" /> 添加元素字段
-          </Button>
-        ))}
-
+      <JsonFieldRow
+        f={json.root}
+        depth={0}
+        isRoot
+        onChange={(root) => onChange({ ...json, root })}
+        onDelete={() => {}}
+        onAddChild={
+          json.root.type === "object"
+            ? () => onChange({ ...json, root: { ...json.root, children: [...json.root.children, newBodyField()] } })
+            : null
+        }
+      />
       <p className="pt-1 text-xs text-muted-foreground">
-        发送请求时按此结构生成 JSON 载荷，示例值作为实际值（支持 {"{{变量}}"}）。
+        根节点与字段同构：类型可选 string/integer/number/boolean/object/array/null。发送请求时按此结构生成 JSON 载荷，示例值作为实际值（支持 {"{{变量}}"}）。
       </p>
     </div>
   );
 }
 
+/** 树的一行：字段名 | 类型 | 中文名 | 必填 | 示例值 | 说明 | 操作 */
 function JsonFieldRow({
   f,
   depth,
   isItems = false,
+  isRoot = false,
   onChange,
   onDelete,
   onAddChild,
@@ -598,12 +552,14 @@ function JsonFieldRow({
   f: BodyField;
   depth: number;
   isItems?: boolean;
+  isRoot?: boolean;
   onChange: (f: BodyField) => void;
   onDelete: () => void;
   onAddChild: (() => void) | null;
 }) {
   const [open, setOpen] = useState(true);
   const isContainer = f.type === "object" || f.type === "array";
+  const fixedLabel = isRoot ? "根节点" : isItems ? "ITEMS" : "";
   const patch = (p: Partial<BodyField>) => onChange({ ...f, ...p });
   const setType = (t: string) => {
     const next: BodyField = { ...f, type: t };
@@ -634,9 +590,9 @@ function JsonFieldRow({
         )}
         <Input
           className="h-7 w-44"
-          placeholder={isItems ? "ITEMS" : "字段名"}
-          value={isItems ? "ITEMS" : f.key}
-          disabled={isItems}
+          placeholder={fixedLabel || "字段名"}
+          value={fixedLabel || f.key}
+          disabled={isRoot || isItems}
           onChange={(e) => patch({ key: e.target.value })}
         />
         <select
@@ -648,14 +604,19 @@ function JsonFieldRow({
             <option key={t} value={t}>{t}</option>
           ))}
         </select>
-        <label className="flex w-14 shrink-0 items-center gap-1 text-xs text-muted-foreground" title="是否必填">
+        <Input
+          className="h-7 w-32"
+          placeholder="中文名"
+          value={f.name}
+          onChange={(e) => patch({ name: e.target.value })}
+        />
+        <label className="flex w-14 shrink-0 items-center justify-center" title="是否必填">
           <input
             type="checkbox"
             className="h-3.5 w-3.5 cursor-pointer accent-(--ring)"
             checked={f.required}
             onChange={(e) => patch({ required: e.target.checked })}
           />
-          必填
         </label>
         <Input
           className={`h-7 flex-1 ${isContainer ? "text-muted-foreground" : ""}`}
@@ -665,7 +626,7 @@ function JsonFieldRow({
           onChange={(e) => patch({ example: e.target.value })}
         />
         <Input
-          className="h-7 w-56"
+          className="h-7 w-48"
           placeholder="说明"
           value={f.description}
           onChange={(e) => patch({ description: e.target.value })}
@@ -675,9 +636,11 @@ function JsonFieldRow({
             <Plus className="h-3.5 w-3.5" />
           </Button>
         )}
-        <Button size="icon" variant="ghost" title="删除字段" onClick={onDelete}>
-          <Trash2 className="h-3.5 w-3.5" />
-        </Button>
+        {!isRoot && (
+          <Button size="icon" variant="ghost" title="删除字段" onClick={onDelete}>
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        )}
       </div>
       {isContainer && open && f.type === "array" && f.items && (
         <JsonFieldRow
@@ -709,11 +672,15 @@ function JsonFieldRow({
                 onChange({ ...f, children });
               }}
               onDelete={() => onChange({ ...f, children: f.children.filter((_, j) => j !== i) })}
-              onAddChild={() => {
-                const children = [...f.children];
-                children[i] = { ...c, children: [...c.children, newBodyField()] };
-                onChange({ ...f, children });
-              }}
+              onAddChild={
+                c.type === "object"
+                  ? () => {
+                      const children = [...f.children];
+                      children[i] = { ...c, children: [...c.children, newBodyField()] };
+                      onChange({ ...f, children });
+                    }
+                  : null
+              }
             />
           ))}
         </div>

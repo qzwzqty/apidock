@@ -449,23 +449,25 @@ mod tests {
         let mut iface: InterfaceFile = InterfaceFile::new("t");
         iface.method = "POST".into();
         iface.url = format!("http://{addr}/api");
-        use crate::storage::{BodyField, JsonBody};
+        use crate::storage::{BodyField, InterfaceFile, JsonBody};
         iface.body = Body {
             mode: "json".into(),
             content_type: "application/json".into(),
             json: JsonBody {
-                root_type: "object".into(),
-                fields: vec![
-                    BodyField { key: "u".into(), field_type: "string".into(), example: "{{tok}}".into(), required: true, ..Default::default() },
-                    BodyField { key: "n".into(), field_type: "integer".into(), example: "42".into(), ..Default::default() },
-                    BodyField {
-                        key: "tags".into(),
-                        field_type: "array".into(),
-                        items: Some(Box::new(BodyField { key: "".into(), field_type: "string".into(), example: "x".into(), ..Default::default() })),
-                        ..Default::default()
-                    },
-                ],
-                items: None,
+                root: BodyField {
+                    field_type: "object".into(),
+                    children: vec![
+                        BodyField { key: "u".into(), field_type: "string".into(), example: "{{tok}}".into(), required: true, ..Default::default() },
+                        BodyField { key: "n".into(), field_type: "integer".into(), example: "42".into(), ..Default::default() },
+                        BodyField {
+                            key: "tags".into(),
+                            field_type: "array".into(),
+                            items: Some(Box::new(BodyField { key: "".into(), field_type: "string".into(), example: "x".into(), ..Default::default() })),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                },
             },
             ..Default::default()
         };

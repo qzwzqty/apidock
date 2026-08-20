@@ -56,6 +56,8 @@ export interface ApiParam {
 /** JSON 请求体结构树字段 */
 export interface BodyField {
   key: string;
+  /** 中文名（字段标题，用于文档展示） */
+  name: string;
   required: boolean;
   /** object | array | string | integer | number | boolean | null */
   type: string;
@@ -65,11 +67,10 @@ export interface BodyField {
   items: BodyField | null;
 }
 
-/** JSON 请求体：根节点类型 + 字段树 */
+/** JSON 请求体结构树：根节点与子节点同构（同一字段类型） */
 export interface JsonBody {
-  rootType: string; // object | array
-  fields: BodyField[];
-  items: BodyField | null;
+  /** 根节点字段（key 固定为空，作为载荷本身） */
+  root: BodyField;
 }
 
 export interface Body {
@@ -82,7 +83,7 @@ export interface Body {
   filePath: string | null;
 }
 
-export const EMPTY_JSON_BODY: JsonBody = { rootType: "object", fields: [], items: null };
+export const EMPTY_JSON_BODY: JsonBody = newJsonBody("object");
 export const EMPTY_BODY: Body = {
   mode: "none",
   content: "",
@@ -95,24 +96,24 @@ export function newApiParam(): ApiParam {
   return { key: "", example: "", required: false, type: "string", description: "", enabled: true };
 }
 export function newBodyField(key = ""): BodyField {
-  return { key, required: false, type: "string", example: "", description: "", children: [], items: null };
+  return { key, name: "", required: false, type: "string", example: "", description: "", children: [], items: null };
 }
 export function newJsonBody(rootType: "object" | "array" = "object"): JsonBody {
-  return rootType === "array"
-    ? { rootType: "array", fields: [], items: newBodyField() }
-    : { rootType: "object", fields: [], items: null };
+  return { root: { ...newBodyField(""), type: rootType } };
 }
 
 /** 由结构树生成示例 JSON（含 {{var}} 原样保留），用于预览 */
 export function jsonBodyToValue(json: JsonBody): unknown {
-  if (json.rootType === "array") {
-    return json.items ? [bodyFieldToValue(json.items)] : [];
-  }
-  const obj: Record<string, unknown> = {};
-  for (const f of json.fields) {
-    if (f.key.trim()) obj[f.key] = bodyFieldToValue(f);
-  }
-  return obj;
+  return bodyFieldToValue(json.root);
+}
+
+/** 结构树是否"无内容"（与后端 JsonBody::is_empty 对齐） */
+export function isJsonBodyEmpty(json: JsonBody): boolean {
+  const r = json.root;
+  return (
+    r.type === "" ||
+    (r.type === "object" && !r.name && !r.example && !r.description && !r.required && r.children.length === 0 && !r.items)
+  );
 }
 
 function bodyFieldToValue(f: BodyField): unknown {

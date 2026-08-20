@@ -787,100 +787,14 @@ pub fn export_openapi(root: &Path, team_key: &str, project_key: &str, want_yaml:
                 }
                 crate::storage::TreeNode::Interface { key, .. } => {
                     let Ok(iface) = storage::get_interface(root, team, proj, &base, key) else { continue };
-                    let trimmed = iface.url.trim();
-                    let (path_str, host) = split_url(trimmed);
+                    let (method, path_str, operation, host) = build_interface_operation(&iface, proj, key, warnings);
                     if let Some(h) = &host {
                         if !hosts.contains(h) {
                             hosts.push(h.clone());
                         }
                     }
-                    let path_str = if path_str.is_empty() { "/".to_string() } else { path_str };
-
-                    let mut parameters = Vec::new();
-                    for q in iface.query.iter().filter(|x| x.is_active()) {
-                        let mut meta = json!({
-                            "name": q.key, "in": "query",
-                            "schema": { "type": schema_type_of(&q.param_type) }
-                        });
-                        if q.required {
-                            meta["required"] = json!(true);
-                        }
-                        if !q.description.is_empty() {
-                            meta["description"] = json!(q.description);
-                        }
-                        if !q.example.is_empty() {
-                            meta["example"] = json!(q.example);
-                        }
-                        parameters.push(meta);
-                    }
-                    for h in iface.headers.iter().filter(|x| x.is_active()) {
-                        if h.key.eq_ignore_ascii_case("content-type") || h.key.eq_ignore_ascii_case("authorization") {
-                            continue;
-                        }
-                        let mut meta = json!({
-                            "name": h.key, "in": "header",
-                            "schema": { "type": schema_type_of(&h.param_type) }
-                        });
-                        if h.required {
-                            meta["required"] = json!(true);
-                        }
-                        if !h.description.is_empty() {
-                            meta["description"] = json!(h.description);
-                        }
-                        if !h.example.is_empty() {
-                            meta["example"] = json!(h.example);
-                        }
-                        parameters.push(meta);
-                    }
-
-                    let mut operation = json!({
-                        "operationId": format!("{}-{}", proj, key),
-                        "summary": iface.name,
-                        "parameters": parameters,
-                        "responses": { "200": { "description": "成功" } }
-                    });
-                    if !iface.description.is_empty() {
-                        operation["description"] = json!(iface.description);
-                    }
-                    match iface.body.mode.as_str() {
-                        "json" => {
-                            // 结构树优先 → OpenAPI Schema；否则用旧 content 文本
-                            let schema = if !iface.body.json.is_empty() {
-                                let mut s = schema_of_json_body(&iface.body.json);
-                                if !iface.body.content.trim().is_empty() {
-                                    if let Ok(ex) = serde_json::from_str::<Value>(&iface.body.content) {
-                                        if !ex.is_null() {
-                                            s["example"] = ex;
-                                        }
-                                    }
-                                }
-                                s
-                            } else {
-                                serde_json::from_str::<Value>(&iface.body.content).unwrap_or(json!({}))
-                            };
-                            operation["requestBody"] = json!({
-                                "content": { "application/json": { "schema": schema } }
-                            });
-                        }
-                        "raw" => {
-                            let ct = iface.body.content_type.clone();
-                            operation["requestBody"] = json!({
-                                "content": { (ct): { "schema": { "type": "string" } } }
-                            });
-                        }
-                        _ => {}
-                    }
-                    match iface.auth.kind.as_str() {
-                        "bearer" => operation["security"] = json!([{"apidock_bearer": []}]),
-                        "basic" => operation["security"] = json!([{"apidock_basic": []}]),
-                        _ => {}
-                    }
-
-                    if trimmed.is_empty() {
-                        warnings.push(format!("接口 {} 的 URL 为空", iface.name));
-                    }
-                    let entry = paths.entry(path_str.to_string()).or_insert_with(|| json!({}));
-                    entry[iface.method.to_lowercase()] = operation;
+                    let entry = paths.entry(path_str).or_insert_with(|| json!({}));
+                    entry[method] = operation;
                 }
             }
         }
@@ -889,6 +803,132 @@ pub fn export_openapi(root: &Path, team_key: &str, project_key: &str, want_yaml:
     let mut hosts: Vec<String> = Vec::new();
     walk_nodes(&tree, Vec::new(), &mut paths, &mut hosts, team_key, project_key, root, &mut warnings);
 
+    let content = openapi_doc(&settings.name, paths, &hosts, want_yaml)?;
+    Ok(ExportOutcome { content, warnings })
+}
+
+/// 把单个接口导出为一个 OpenAPI 3.0 文档（仅一条路径）
+pub fn export_openapi_interface(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    group_path: &[String],
+    iface_key: &str,
+    want_yaml: bool,
+) -> Result<ExportOutcome, String> {
+    let settings = crate::storage::get_project_settings(root, team_key, project_key)?;
+    let iface = storage::get_interface(root, team_key, project_key, group_path, iface_key)
+        .map_err(|e| format!("读取接口 {iface_key} 失败：{e}"))?;
+    let mut warnings = Vec::new();
+    let (method, path_str, operation, host) = build_interface_operation(&iface, project_key, iface_key, &mut warnings);
+    let mut entry = serde_json::Map::new();
+    entry.insert(method, operation);
+    let mut paths = serde_json::Map::new();
+    paths.insert(path_str, Value::Object(entry));
+    let hosts: Vec<String> = host.into_iter().collect();
+    let content = openapi_doc(&settings.name, paths, &hosts, want_yaml)?;
+    Ok(ExportOutcome { content, warnings })
+}
+
+/// 单个接口 → (小写方法, 路径, OpenAPI operation, host)
+fn build_interface_operation(
+    iface: &crate::storage::InterfaceFile,
+    proj: &str,
+    key: &str,
+    warnings: &mut Vec<String>,
+) -> (String, String, Value, Option<String>) {
+    let trimmed = iface.url.trim();
+    let (path_str, host) = split_url(trimmed);
+    let path_str = if path_str.is_empty() { "/".to_string() } else { path_str };
+
+    let mut parameters = Vec::new();
+    for q in iface.query.iter().filter(|x| x.is_active()) {
+        let mut meta = json!({
+            "name": q.key, "in": "query",
+            "schema": { "type": schema_type_of(&q.param_type) }
+        });
+        if q.required {
+            meta["required"] = json!(true);
+        }
+        if !q.description.is_empty() {
+            meta["description"] = json!(q.description);
+        }
+        if !q.example.is_empty() {
+            meta["example"] = json!(q.example);
+        }
+        parameters.push(meta);
+    }
+    for h in iface.headers.iter().filter(|x| x.is_active()) {
+        if h.key.eq_ignore_ascii_case("content-type") || h.key.eq_ignore_ascii_case("authorization") {
+            continue;
+        }
+        let mut meta = json!({
+            "name": h.key, "in": "header",
+            "schema": { "type": schema_type_of(&h.param_type) }
+        });
+        if h.required {
+            meta["required"] = json!(true);
+        }
+        if !h.description.is_empty() {
+            meta["description"] = json!(h.description);
+        }
+        if !h.example.is_empty() {
+            meta["example"] = json!(h.example);
+        }
+        parameters.push(meta);
+    }
+
+    let mut operation = json!({
+        "operationId": format!("{}-{}", proj, key),
+        "summary": iface.name,
+        "parameters": parameters,
+        "responses": { "200": { "description": "成功" } }
+    });
+    if !iface.description.is_empty() {
+        operation["description"] = json!(iface.description);
+    }
+    match iface.body.mode.as_str() {
+        "json" => {
+            // 结构树优先 → OpenAPI Schema；否则用旧 content 文本
+            let schema = if !iface.body.json.is_empty() {
+                let mut s = schema_of_json_body(&iface.body.json);
+                if !iface.body.content.trim().is_empty() {
+                    if let Ok(ex) = serde_json::from_str::<Value>(&iface.body.content) {
+                        if !ex.is_null() {
+                            s["example"] = ex;
+                        }
+                    }
+                }
+                s
+            } else {
+                serde_json::from_str::<Value>(&iface.body.content).unwrap_or(json!({}))
+            };
+            operation["requestBody"] = json!({
+                "content": { "application/json": { "schema": schema } }
+            });
+        }
+        "raw" => {
+            let ct = iface.body.content_type.clone();
+            operation["requestBody"] = json!({
+                "content": { (ct): { "schema": { "type": "string" } } }
+            });
+        }
+        _ => {}
+    }
+    match iface.auth.kind.as_str() {
+        "bearer" => operation["security"] = json!([{"apidock_bearer": []}]),
+        "basic" => operation["security"] = json!([{"apidock_basic": []}]),
+        _ => {}
+    }
+
+    if trimmed.is_empty() {
+        warnings.push(format!("接口 {} 的 URL 为空", iface.name));
+    }
+    (iface.method.to_lowercase(), path_str, operation, host)
+}
+
+/// OpenAPI 3.0 文档组装（openapi / info / paths / components / servers）
+fn openapi_doc(title: &str, paths: serde_json::Map<String, Value>, hosts: &[String], want_yaml: bool) -> Result<String, String> {
     let mut schemes = serde_json::Map::new();
     schemes.insert("apidock_bearer".into(), json!({"type":"http","scheme":"bearer"}));
     schemes.insert("apidock_basic".into(), json!({"type":"http","scheme":"basic"}));
@@ -896,7 +936,7 @@ pub fn export_openapi(root: &Path, team_key: &str, project_key: &str, want_yaml:
 
     let mut doc_map = serde_json::Map::new();
     doc_map.insert("openapi".into(), json!("3.0.3"));
-    doc_map.insert("info".into(), json!({ "title": settings.name, "version": "1.0.0" }));
+    doc_map.insert("info".into(), json!({ "title": title, "version": "1.0.0" }));
     doc_map.insert("paths".into(), Value::Object(paths));
     doc_map.insert("components".into(), components);
     if !hosts.is_empty() {
@@ -905,13 +945,11 @@ pub fn export_openapi(root: &Path, team_key: &str, project_key: &str, want_yaml:
     }
     let doc = Value::Object(doc_map);
 
-    let content = if want_yaml {
-        serde_yaml_ng::to_string(&doc).map_err(|e| format!("YAML 序列化失败：{e}"))?
+    if want_yaml {
+        serde_yaml_ng::to_string(&doc).map_err(|e| format!("YAML 序列化失败：{e}"))
     } else {
-        serde_json::to_string_pretty(&doc).map_err(|e| format!("JSON 序列化失败：{e}"))?
-    };
-
-    Ok(ExportOutcome { content, warnings })
+        serde_json::to_string_pretty(&doc).map_err(|e| format!("JSON 序列化失败：{e}"))
+    }
 }
 
 /// 参数类型 → OpenAPI schema type（空/未知按 string）

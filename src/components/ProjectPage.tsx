@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { FolderPlus, FilePlus2, MoreVertical, Upload, Download, X, Settings2, ChevronDown, FileText, Loader2, Play, Import } from "lucide-react";
+import { save } from "@tauri-apps/plugin-dialog";
+import { FolderPlus, FilePlus2, MoreVertical, Upload, Download, X, Settings2, ChevronDown, FileText, Loader2 } from "lucide-react";
 import { InterfaceTree, PromptDialog, type IfaceRef } from "@/components/InterfaceTree";
 import { InterfaceEditor, type EditorMode } from "@/components/InterfaceEditor";
 import { ResponseView } from "@/components/ResponseView";
@@ -117,6 +118,20 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
     setRunState({ running: false, report, open: true });
   };
 
+  /** 导出单个接口为 OpenAPI 3.0 JSON */
+  const exportIface = async (ref: IfaceRef) => {
+    const path = await save({
+      defaultPath: `${ref.key}.openapi.json`,
+      filters: [{ name: "OpenAPI JSON", extensions: ["json"] }],
+    });
+    if (!path) return;
+    try {
+      await api.exportInterfaceOpenapiFile(path, teamKey, projectKey, ref.groupPath, ref.key, false);
+    } catch (e) {
+      alert(`导出失败：${e}`);
+    }
+  };
+
   return (
     <div className="flex h-full">
       {/* 左侧：接口树 */}
@@ -193,6 +208,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
               onRunGroup={(groupPath) => void run(groupPath)}
               onMoveIface={(ref) => setDlg({ kind: "moveIface", ref, exclude: ref.groupPath })}
               onMoveGroup={(ref) => setDlg({ kind: "moveGroup", ref, exclude: ref.groupPath })}
+              onExportIface={(ref) => void exportIface(ref)}
             />
           )}
         </div>
@@ -203,20 +219,6 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
         {/* 项目上下文行：项目定位 + 环境选择 + 项目设置 */}
         <div className="flex h-9 shrink-0 items-center border-b border-border text-sm">
           <span className="px-4 text-muted-foreground">{teamKey} / {projectKey}</span>
-          <button
-            className="flex h-full cursor-pointer items-center gap-1.5 px-3 text-xs text-accent transition-colors hover:bg-muted"
-            onClick={() => void run([])}
-            title="一键运行项目下全部接口（含断言校验）"
-          >
-            <Play className="h-3.5 w-3.5" /> 运行全部
-          </button>
-          <button
-            className="flex h-full cursor-pointer items-center gap-1.5 px-3 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            onClick={() => openImportExport("import")}
-            title="OpenAPI / Postman 导入导出"
-          >
-            <Import className="h-3.5 w-3.5" /> 导入/导出
-          </button>
           <button
             className="ml-auto flex h-full cursor-pointer items-center gap-2 px-3 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             onClick={() => setShowEnvMgr(true)}

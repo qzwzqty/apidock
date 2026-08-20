@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { ChevronDown, ChevronRight, FolderPlus, FilePlus2, Pencil, Trash2, Folder, Play, MoveRight } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ChevronDown, ChevronRight, FolderPlus, FilePlus2, Pencil, Trash2, Folder, Play, MoveRight, MoreVertical, Download } from "lucide-react";
 import type { TreeNode } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,7 @@ export function InterfaceTree({
   onRunGroup,
   onMoveIface,
   onMoveGroup,
+  onExportIface,
 }: {
   tree: TreeNode[];
   activeId: string | null;
@@ -37,6 +38,7 @@ export function InterfaceTree({
   onRunGroup?: (groupPath: string[]) => void;
   onMoveIface?: (ref: IfaceRef) => void;
   onMoveGroup?: (ref: IfaceRef) => void;
+  onExportIface?: (ref: IfaceRef) => void;
 }) {
   return (
     <div className="select-none">
@@ -62,6 +64,7 @@ export function InterfaceTree({
           onRunGroup={onRunGroup}
           onMoveIface={onMoveIface}
           onMoveGroup={onMoveGroup}
+          onExportIface={onExportIface}
         />
       ))}
     </div>
@@ -83,6 +86,7 @@ function Node({
   onRunGroup,
   onMoveIface,
   onMoveGroup,
+  onExportIface,
 }: {
   node: TreeNode;
   path: string[];
@@ -98,21 +102,35 @@ function Node({
   onRunGroup?: (groupPath: string[]) => void;
   onMoveIface?: (ref: IfaceRef) => void;
   onMoveGroup?: (ref: IfaceRef) => void;
+  onExportIface?: (ref: IfaceRef) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (rowRef.current && !rowRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [menuOpen]);
 
   if (node.type === "interface") {
     const id = [...path, node.key].join("/");
+    const ref = { groupPath: path, key: node.key };
     return (
       <div
+        ref={rowRef}
         className={cn(
-          "group flex items-center gap-1 rounded-md py-1 pl-[7px] pr-1 text-sm cursor-pointer",
+          "group relative flex items-center gap-1 rounded-md py-1 pl-[7px] pr-1 text-sm cursor-pointer",
           activeId === id
             ? "bg-accent text-accent-foreground"
             : "text-muted-foreground hover:bg-muted hover:text-foreground",
         )}
         style={{ paddingLeft: depth * 14 + 7 }}
-        onClick={() => onOpenIface({ groupPath: path, key: node.key })}
+        onClick={() => onOpenIface(ref)}
       >
         <span className={cn("w-10 shrink-0 truncate text-[10px]", node.method.startsWith("G") ? "text-green-500" : "text-orange-400")}>
           {node.method}
@@ -120,38 +138,29 @@ function Node({
         <span className="min-w-0 truncate">{node.name}</span>
         <span className="ml-auto flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100">
           <button
-            className="rounded p-0.5 hover:bg-border cursor-pointer"
-            title="重命名接口"
+            className={cn("rounded p-0.5 hover:bg-border cursor-pointer", menuOpen && "opacity-100")}
+            title="更多操作（编辑 / 移动 / 删除 / 导出）"
             onClick={(e) => {
               e.stopPropagation();
-              onRenameIface({ groupPath: path, key: node.key });
+              setMenuOpen((v) => !v);
             }}
           >
-            <Pencil className="h-3 w-3" />
-          </button>
-          {onMoveIface && (
-            <button
-              className="rounded p-0.5 hover:bg-border cursor-pointer"
-              title="移动到其它分组"
-              onClick={(e) => {
-                e.stopPropagation();
-                onMoveIface({ groupPath: path, key: node.key });
-              }}
-            >
-              <MoveRight className="h-3 w-3" />
-            </button>
-          )}
-          <button
-            className="rounded p-0.5 hover:bg-border cursor-pointer"
-            title="删除接口"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDeleteIface({ groupPath: path, key: node.key });
-            }}
-          >
-            <Trash2 className="h-3 w-3" />
+            <MoreVertical className="h-3 w-3" />
           </button>
         </span>
+        {menuOpen && (
+          <div className="absolute right-1 top-7 z-50 w-40 overflow-hidden rounded-md border border-border bg-muted shadow-xl">
+            <MenuItem icon={<Pencil className="h-3.5 w-3.5" />} label="编辑" onClick={() => { setMenuOpen(false); onRenameIface(ref); }} />
+            {onMoveIface && (
+              <MenuItem icon={<MoveRight className="h-3.5 w-3.5" />} label="移动" onClick={() => { setMenuOpen(false); onMoveIface(ref); }} />
+            )}
+            {onExportIface && (
+              <MenuItem icon={<Download className="h-3.5 w-3.5" />} label="导出（OpenAPI）" onClick={() => { setMenuOpen(false); onExportIface(ref); }} />
+            )}
+            <div className="my-1 h-px bg-border" />
+            <MenuItem danger icon={<Trash2 className="h-3.5 w-3.5" />} label="删除" onClick={() => { setMenuOpen(false); onDeleteIface(ref); }} />
+          </div>
+        )}
       </div>
     );
   }
@@ -255,11 +264,36 @@ function Node({
               onRunGroup={onRunGroup}
               onMoveIface={onMoveIface}
               onMoveGroup={onMoveGroup}
+              onExportIface={onExportIface}
             />
           ))}
         </div>
       )}
     </div>
+  );
+}
+
+/** 下拉菜单项 */
+function MenuItem({
+  icon,
+  label,
+  danger,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  danger?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className={`flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:bg-border ${
+        danger ? "text-red-400" : "text-foreground"
+      }`}
+      onClick={onClick}
+    >
+      {icon} {label}
+    </button>
   );
 }
 

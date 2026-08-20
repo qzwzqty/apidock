@@ -614,6 +614,25 @@ async fn export_openapi_file(
     Ok(out.warnings)
 }
 
+#[tauri::command]
+async fn export_interface_openapi_file(
+    state: State<'_, AppState>,
+    path: String,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    iface_key: String,
+    yaml: bool,
+) -> Result<Vec<String>, String> {
+    let root = {
+        let guard = state.root.lock().unwrap();
+        guard.clone().ok_or("尚未选择数据根目录")?
+    };
+    let out = imports::export_openapi_interface(&root, &team_key, &project_key, &group_path, &iface_key, yaml)?;
+    std::fs::write(&path, out.content).map_err(|e| format!("写入文件失败：{e}"))?;
+    Ok(out.warnings)
+}
+
 fn restart_watcher(state: &AppState, root: &PathBuf) -> Result<(), String> {
     let mut guard = state.watcher.lock().unwrap();
     *guard = Some(start_watcher(root)?);
@@ -741,6 +760,7 @@ pub fn run() {
             import_spec_into_project,
             import_spec_new_project,
             export_openapi_file,
+            export_interface_openapi_file,
         ])
         .setup(move |app| {
             // 文件变更去抖后 emit，供前端刷新

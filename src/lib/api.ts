@@ -365,4 +365,13 @@ export const api = {
     invoke<[ImportReport, string]>("import_spec_new_project", { path, teamKey }),
   exportOpenapiFile: (path: string, teamKey: string, projectKey: string, yaml: boolean) =>
     invoke<string[]>("export_openapi_file", { path, teamKey, projectKey, yaml }),
+  exportInterfaceOpenapiFile: (
+    path: string,
+    teamKey: string,
+    projectKey: string,
+    groupPath: string[],
+    ifaceKey: string,
+    yaml: boolean,
+  ) =>
+    invoke<string[]>("export_interface_openapi_file", { path, teamKey, projectKey, groupPath, ifaceKey, yaml }),
 };

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown, ChevronRight, FolderPlus, FilePlus2, Pencil, Trash2, Folder, Play } from "lucide-react";
+import { ChevronDown, ChevronRight, FolderPlus, FilePlus2, Pencil, Trash2, Folder, Play, MoveRight } from "lucide-react";
 import type { TreeNode } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,8 @@ export function InterfaceTree({
   onCreateIface,
   onDeleteIface,
   onRunGroup,
+  onMoveIface,
+  onMoveGroup,
 }: {
   tree: TreeNode[];
   activeId: string | null;
@@ -31,6 +33,8 @@ export function InterfaceTree({
   onCreateIface: (groupPath: string[]) => void;
   onDeleteIface: (ref: IfaceRef) => void;
   onRunGroup?: (groupPath: string[]) => void;
+  onMoveIface?: (ref: IfaceRef) => void;
+  onMoveGroup?: (ref: IfaceRef) => void;
 }) {
   return (
     <div className="select-none">
@@ -53,6 +57,8 @@ export function InterfaceTree({
           onCreateIface={onCreateIface}
           onDeleteIface={onDeleteIface}
           onRunGroup={onRunGroup}
+          onMoveIface={onMoveIface}
+          onMoveGroup={onMoveGroup}
         />
       ))}
     </div>
@@ -71,6 +77,8 @@ function Node({
   onCreateIface,
   onDeleteIface,
   onRunGroup,
+  onMoveIface,
+  onMoveGroup,
 }: {
   node: TreeNode;
   path: string[];
@@ -83,6 +91,8 @@ function Node({
   onCreateIface: (groupPath: string[]) => void;
   onDeleteIface: (ref: IfaceRef) => void;
   onRunGroup?: (groupPath: string[]) => void;
+  onMoveIface?: (ref: IfaceRef) => void;
+  onMoveGroup?: (ref: IfaceRef) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
 
@@ -104,6 +114,18 @@ function Node({
         </span>
         <span className="truncate">{node.name}</span>
         <span className="ml-auto shrink-0 opacity-0 transition-opacity group-hover:opacity-100">
+          {onMoveIface && (
+            <button
+              className="rounded p-0.5 hover:bg-border cursor-pointer"
+              title="移动到其它分组"
+              onClick={(e) => {
+                e.stopPropagation();
+                onMoveIface({ groupPath: path, key: node.key });
+              }}
+            >
+              <MoveRight className="h-3 w-3" />
+            </button>
+          )}
           <button
             className="rounded p-0.5 hover:bg-border cursor-pointer"
             title="删除接口"
@@ -175,6 +197,18 @@ function Node({
           >
             <Pencil className="h-3 w-3" />
           </button>
+          {onMoveGroup && (
+            <button
+              className="rounded p-0.5 hover:bg-border cursor-pointer"
+              title="移动到其它分组"
+              onClick={(e) => {
+                e.stopPropagation();
+                onMoveGroup({ groupPath: [...path, node.key], key: node.key });
+              }}
+            >
+              <MoveRight className="h-3 w-3" />
+            </button>
+          )}
           <button
             className="rounded p-0.5 hover:bg-border hover:text-red-400 cursor-pointer"
             title="删除分组"
@@ -203,6 +237,8 @@ function Node({
               onCreateIface={onCreateIface}
               onDeleteIface={onDeleteIface}
               onRunGroup={onRunGroup}
+              onMoveIface={onMoveIface}
+              onMoveGroup={onMoveGroup}
             />
           ))}
         </div>

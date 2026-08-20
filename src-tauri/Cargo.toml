@@ -24,7 +24,7 @@ serde_json = "1"
 tauri-plugin-dialog = "2"
 uuid = { version = "1.24.1", features = ["v4"] }
 notify = "8.2.0"
-reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "http2", "json", "gzip", "multipart", "query", "system-proxy"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "http2", "json", "gzip", "multipart", "query", "system-proxy", "cookies"] }
 serde_urlencoded = "0.7.1"
 mime_guess = "2.0.5"
 tokio = { version = "1.53.1", features = ["fs"] }

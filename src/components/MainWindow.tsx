@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Search, Plus, Folder, Trash2, Users } from "lucide-react";
-import type { TeamInfo } from "@/lib/api";
+import { Search, Plus, Folder, Trash2, Users, Pencil } from "lucide-react";
+import type { TeamInfo, ProjectInfo } from "@/lib/api";
 import { useWorkspace, sanitizeKey } from "@/lib/workspace";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -15,9 +15,11 @@ export function MainWindow() {
   const projects = useWorkspace((s) => s.projects);
   const selectTeam = useWorkspace((s) => s.selectTeam);
   const deleteTeam = useWorkspace((s) => s.deleteTeam);
+  const renameTeam = useWorkspace((s) => s.renameTeam);
   const createTeam = useWorkspace((s) => s.createTeam);
   const createProject = useWorkspace((s) => s.createProject);
   const deleteProject = useWorkspace((s) => s.deleteProject);
+  const renameProject = useWorkspace((s) => s.renameProject);
   const openProject = useWorkspace((s) => s.openProject);
   const pickDataRoot = useWorkspace((s) => s.pickDataRoot);
 
@@ -25,6 +27,8 @@ export function MainWindow() {
   const [projQ, setProjQ] = useState("");
   const [showTeamDlg, setShowTeamDlg] = useState(false);
   const [showProjDlg, setShowProjDlg] = useState(false);
+  const [renameTeamTarget, setRenameTeamTarget] = useState<TeamInfo | null>(null);
+  const [renameProjTarget, setRenameProjTarget] = useState<ProjectInfo | null>(null);
 
   // 外部变更自动刷新团队/项目
   useEffect(() => {
@@ -86,6 +90,7 @@ export function MainWindow() {
               team={team}
               active={team.key === selectedTeamKey}
               onClick={() => selectTeam(team.key)}
+              onRename={() => setRenameTeamTarget(team)}
               onDelete={() => {
                 if (confirm(`删除团队「${team.name}」及其下所有项目？此操作不可恢复。`)) {
                   void deleteTeam(team.key);
@@ -150,18 +155,30 @@ export function MainWindow() {
                     </span>
                   </div>
                   <p className="truncate text-xs text-muted-foreground">键：{proj.key}</p>
-                  <button
-                    className="absolute right-2 top-2 rounded-sm p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-border hover:text-red-400 group-hover:opacity-100 cursor-pointer"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (confirm(`删除项目「${proj.name}」及其所有接口？此操作不可恢复。`)) {
-                        void deleteProject(proj.key);
-                      }
-                    }}
-                    title="删除项目"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  <span className="absolute right-2 top-2 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                    <button
+                      className="rounded-sm p-1 text-muted-foreground hover:bg-border hover:text-foreground cursor-pointer"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRenameProjTarget(proj);
+                      }}
+                      title="重命名项目"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      className="rounded-sm p-1 text-muted-foreground hover:bg-border hover:text-red-400 cursor-pointer"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (confirm(`删除项目「${proj.name}」及其所有接口？此操作不可恢复。`)) {
+                          void deleteProject(proj.key);
+                        }
+                      }}
+                      title="删除项目"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </span>
                 </div>
               ))}
               {filteredProjects.length === 0 && (
@@ -200,6 +217,39 @@ export function MainWindow() {
           setShowProjDlg(false);
         }}
       />
+      {renameTeamTarget && (
+        <CreateDialog
+          open
+          title="重命名团队"
+          nameLabel="团队名"
+          keyLabel="英文键"
+          extraName={renameTeamTarget.name}
+          extraKey={renameTeamTarget.key}
+          confirmText="重命名"
+          onClose={() => setRenameTeamTarget(null)}
+          onSubmit={async (key, name) => {
+            await renameTeam(renameTeamTarget.key, key, name);
+            setRenameTeamTarget(null);
+          }}
+        />
+      )}
+      {renameProjTarget && (
+        <CreateDialog
+          open
+          title="重命名项目"
+          nameLabel="项目名"
+          keyLabel="英文键"
+          extraName={renameProjTarget.name}
+          extraKey={renameProjTarget.key}
+          confirmText="重命名"
+          onClose={() => setRenameProjTarget(null)}
+          onSubmit={async (key, name) => {
+            const team = selectedTeamKey;
+            if (team) await renameProject(team, renameProjTarget.key, key, name);
+            setRenameProjTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -208,11 +258,13 @@ function TeamRow({
   team,
   active,
   onClick,
+  onRename,
   onDelete,
 }: {
   team: TeamInfo;
   active: boolean;
   onClick: () => void;
+  onRename: () => void;
   onDelete: () => void;
 }) {
   return (
@@ -227,6 +279,16 @@ function TeamRow({
     >
       <span className="truncate">{team.name}</span>
       <span className="flex shrink-0 items-center">
+        <button
+          className="rounded-sm p-0.5 opacity-0 transition-opacity hover:bg-border group-hover:opacity-100 cursor-pointer"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRename();
+          }}
+          title="重命名团队"
+        >
+          <Pencil className="h-3 w-3" />
+        </button>
         <button
           className="rounded-sm p-0.5 opacity-0 transition-opacity hover:bg-border group-hover:opacity-100 cursor-pointer"
           onClick={(e) => {
@@ -247,6 +309,9 @@ function CreateDialog({
   title,
   nameLabel,
   keyLabel,
+  extraName,
+  extraKey,
+  confirmText,
   onClose,
   onSubmit,
 }: {
@@ -254,12 +319,15 @@ function CreateDialog({
   title: string;
   nameLabel: string;
   keyLabel: string;
+  extraName?: string;
+  extraKey?: string;
+  confirmText?: string;
   onClose: () => void;
   onSubmit: (key: string, name: string) => Promise<void>;
 }) {
-  const [name, setName] = useState("");
-  const [key, setKey] = useState("");
-  const [autoKey, setAutoKey] = useState(true);
+  const [name, setName] = useState(extraName ?? "");
+  const [key, setKey] = useState(extraKey ?? "");
+  const [autoKey, setAutoKey] = useState(!extraName);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -268,7 +336,7 @@ function CreateDialog({
       setErr("请填写名称");
       return;
     }
-    const finalKey = autoKey ? sanitizeKey(name) : sanitizeKey(key);
+    const finalKey = (autoKey ? sanitizeKey(name) : sanitizeKey(key)).trim();
     if (!finalKey) {
       setErr("英文键不能为空，且需为字母/数字/连字符（中文名建议手动填写英文键）");
       return;
@@ -315,7 +383,7 @@ function CreateDialog({
             取消
           </Button>
           <Button onClick={submit} disabled={busy}>
-            创建
+            {confirmText ?? "创建"}
           </Button>
         </DialogFooter>
       </div>

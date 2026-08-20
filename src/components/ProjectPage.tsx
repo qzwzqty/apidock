@@ -8,6 +8,7 @@ import { EnvManager } from "@/components/EnvManager";
 import { ProjectSettingsDialog } from "@/components/ProjectSettingsDialog";
 import { RunReportDialog } from "@/components/RunReportDialog";
 import { ImportExportDialog } from "@/components/ImportExportDialog";
+import { MoveTargetDialog } from "@/components/MoveTargetDialog";
 import { api, type EnvironmentSummary, type RunReport, type SendOutcome } from "@/lib/api";
 import { useProject } from "@/lib/project";
 import { cn } from "@/lib/utils";
@@ -16,6 +17,8 @@ type DlgState =
   | { kind: "createGroup"; parentPath: string[] }
   | { kind: "createIface"; groupPath: string[] }
   | { kind: "renameGroup"; ref: IfaceRef }
+  | { kind: "moveIface"; ref: IfaceRef; exclude?: string[] | null }
+  | { kind: "moveGroup"; ref: IfaceRef; exclude?: string[] | null }
   | null;
 
 export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectKey: string }) {
@@ -139,6 +142,8 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
                 }
               }}
               onRunGroup={(groupPath) => void run(groupPath)}
+              onMoveIface={(ref) => setDlg({ kind: "moveIface", ref, exclude: ref.groupPath })}
+              onMoveGroup={(ref) => setDlg({ kind: "moveGroup", ref, exclude: ref.groupPath })}
             />
           )}
         </div>
@@ -282,6 +287,34 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
           onClose={() => setDlg(null)}
           onSubmit={(key, name) => renameGroup(tabId, teamKey, projectKey, dlg.ref.groupPath, key, name)}
           confirmText="重命名"
+        />
+      )}
+      {dlg?.kind === "moveIface" && (
+        <MoveTargetDialog
+          open
+          title={`移动接口「${dlg.ref.key}」到：`}
+          tree={proj?.tree ?? []}
+          excludePath={null}
+          onClose={() => setDlg(null)}
+          onConfirm={async (target) => {
+            await api.moveInterface(teamKey, projectKey, dlg.ref.groupPath, dlg.ref.key, target);
+            await useProject.getState().loadTree(tabId, teamKey, projectKey);
+            setDlg(null);
+          }}
+        />
+      )}
+      {dlg?.kind === "moveGroup" && (
+        <MoveTargetDialog
+          open
+          title={`移动分组「${dlg.ref.key}」到：`}
+          tree={proj?.tree ?? []}
+          excludePath={dlg.ref.groupPath}
+          onClose={() => setDlg(null)}
+          onConfirm={async (target) => {
+            await api.moveGroup(teamKey, projectKey, dlg.ref.groupPath, target);
+            await useProject.getState().loadTree(tabId, teamKey, projectKey);
+            setDlg(null);
+          }}
         />
       )}
 

@@ -902,6 +902,126 @@ pub fn save_project_settings(
     write_project_meta(root, team_key, project_key, &meta)
 }
 
+// ----- 重命名 / 移动 -----
+
+fn rename_dir_if_needed(dir: &Path, new_key: &str) -> Result<PathBuf, String> {
+    let old_name = dir.file_name().unwrap().to_string_lossy().into_owned();
+    if new_key != old_name {
+        let target = dir.with_file_name(new_key);
+        if target.exists() {
+            return Err(format!("键 {new_key} 已存在"));
+        }
+        fs::rename(dir, &target).map_err(|e| e.to_string())?;
+        Ok(target)
+    } else {
+        Ok(dir.to_path_buf())
+    }
+}
+
+pub fn rename_team(root: &Path, team_key: &str, new_key: &str, new_name: &str) -> Result<(), String> {
+    let dir = team_dir(root, team_key);
+    if !dir.exists() {
+        return Err(format!("团队 {team_key} 不存在"));
+    }
+    let dir = rename_dir_if_needed(&dir, new_key)?;
+    let meta = TeamMeta { version: SCHEMA_VERSION, name: new_name.to_string() };
+    let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
+    atomic_write(&dir.join(TEAM_FILE), &text).map_err(|e| e.to_string())
+}
+
+pub fn rename_project(root: &Path, team_key: &str, project_key: &str, new_key: &str, new_name: &str) -> Result<(), String> {
+    let dir = project_dir(root, team_key, project_key);
+    if !dir.exists() {
+        return Err(format!("项目 {project_key} 不存在"));
+    }
+    let dir = rename_dir_if_needed(&dir, new_key)?;
+    let mut meta = read_project_meta(root, team_key, project_key).unwrap_or(ProjectMeta {
+        version: SCHEMA_VERSION,
+        name: project_key.into(),
+        active_environment_id: None,
+        global_variables: Vec::new(),
+        global_params: GlobalParams::default(),
+    });
+    meta.name = new_name.to_string();
+    write_project_meta(root, team_key, &dir.file_name().unwrap().to_string_lossy(), &meta)
+}
+
+/// 移动接口到目标分组；若目标分组不存在则创建。返回新文件名键。
+pub fn move_interface(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    group_path: &[String],
+    iface_key: &str,
+    target_group_path: &[String],
+) -> Result<String, String> {
+    let src = interface_file(root, team_key, project_key, group_path, iface_key);
+    if !src.exists() {
+        return Err(format!("接口 {iface_key} 不存在"));
+    }
+    // 确保目标分组目录存在
+    let mut cur = project_api_dir(root, team_key, project_key);
+    for seg in target_group_path {
+        cur = cur.join(seg);
+        if !cur.is_dir() {
+            fs::create_dir_all(cur.join(GROUP_FILE).parent().unwrap()).map_err(|e| e.to_string())?;
+            let meta = GroupMeta { version: SCHEMA_VERSION, name: seg.clone() };
+            let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
+            atomic_write(&cur.join(GROUP_FILE), &text).map_err(|e| e.to_string())?;
+        }
+    }
+    let dst_base = cur.join(iface_key);
+    let dst = dst_base.with_extension("json");
+    if dst.exists() {
+        return Err(format!("目标分组已存在接口键 {iface_key}"));
+    }
+    fs::rename(&src, &dst).map_err(|e| e.to_string())?;
+    Ok(iface_key.to_string())
+}
+
+/// 把分组整体移动到另一个分组下（不允许移动到自身/子孙）
+pub fn move_group(
+    root: &Path,
+    team_key: &str,
+    project_key: &str,
+    group_path: &[String],
+    target_group_path: &[String],
+) -> Result<(), String> {
+    if group_path.is_empty() {
+        return Err("不能移动根级".into());
+    }
+    if group_path == target_group_path {
+        return Err("目标即自身".into());
+    }
+    // 不能移动到自身子孙里
+    if group_path.len() <= target_group_path.len()
+        && group_path[..group_path.len()] == target_group_path[..group_path.len()]
+    {
+        return Err("不能移动到自己的子分组下".into());
+    }
+    let src = group_dir_at(root, team_key, project_key, group_path);
+    if !src.is_dir() {
+        return Err("分组不存在".into());
+    }
+    // 确定目标父目录
+    let mut cur = project_api_dir(root, team_key, project_key);
+    for seg in target_group_path {
+        cur = cur.join(seg);
+        if !cur.is_dir() {
+            let meta = GroupMeta { version: SCHEMA_VERSION, name: seg.clone() };
+            let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
+            fs::create_dir_all(cur.join(GROUP_FILE).parent().unwrap()).map_err(|e| e.to_string())?;
+            atomic_write(&cur.join(GROUP_FILE), &text).map_err(|e| e.to_string())?;
+        }
+    }
+    let key = group_path.last().unwrap();
+    let target = cur.join(key);
+    if target.exists() {
+        return Err(format!("目标分组下已存在 {key}"));
+    }
+    fs::rename(&src, &target).map_err(|e| e.to_string())
+}
+
 pub fn delete_team(root: &Path, team_key: &str) -> Result<(), String> {
     let dir = team_dir(root, team_key);
     if !dir.exists() {
@@ -1147,6 +1267,39 @@ mod tests {
         let s2 = get_project_settings(&root, "ops", "user-api").unwrap();
         assert_eq!(s2.global_variables[0].key, "host");
         assert_eq!(s2.global_params.headers[0].key, "X-Trace");
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rename_and_move_nodes() {
+        let root = temp_root();
+        setup(&root);
+        create_interface(&root, "ops", "user-api", &[], "a", "A接口").unwrap();
+        create_group(&root, "ops", "user-api", &[], "g1", "分组1").unwrap();
+        create_group(&root, "ops", "user-api", &["g1".to_string()], "g1-1", "子分组").unwrap();
+        create_interface(&root, "ops", "user-api", &["g1".to_string()], "in-g1", "分组内接口").unwrap();
+
+        // 重命名团队 / 项目
+        rename_team(&root, "ops", "devops", "运维研发").unwrap();
+        assert!(team_dir(&root, "devops").is_dir());
+        rename_project(&root, "devops", "user-api", "user-center", "用户中心v2").unwrap();
+        assert!(project_dir(&root, "devops", "user-center").is_dir());
+
+        // 移动接口到分组
+        let new_key = move_interface(&root, "devops", "user-center", &[], "a", &["g1".to_string()]).unwrap();
+        assert_eq!(new_key, "a");
+        assert!(interface_file(&root, "devops", "user-center", &["g1".to_string()], "a").exists());
+        assert!(!interface_file(&root, "devops", "user-center", &[], "a").exists());
+
+        // 移动分组 g1 到项目根下另一个分组（先造目标）
+        create_group(&root, "devops", "user-center", &[], "ext", "外部").unwrap();
+        move_group(&root, "devops", "user-center", &["g1".to_string()], &["ext".to_string()]).unwrap();
+        assert!(group_dir_at(&root, "devops", "user-center", &["ext".to_string(), "g1".to_string()]).is_dir());
+        assert!(!group_dir_at(&root, "devops", "user-center", &["g1".to_string()]).is_dir());
+
+        // 不能移动到自身子孙
+        assert!(move_group(&root, "devops", "user-center", &["ext".to_string()], &["ext".to_string(), "g1".to_string()]).is_err());
 
         std::fs::remove_dir_all(&root).unwrap();
     }

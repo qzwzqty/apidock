@@ -14,6 +14,7 @@ pub struct SendOptions {
     pub tls_verify: Option<bool>,
     pub ca_cert_path: Option<String>,
     pub proxy: ProxyConfig,
+    pub cookie_jar: Option<std::sync::Arc<reqwest::cookie::Jar>>,
 }
 
 impl Default for SendOptions {
@@ -24,6 +25,7 @@ impl Default for SendOptions {
             tls_verify: None,
             ca_cert_path: None,
             proxy: ProxyConfig::default(),
+            cookie_jar: None,
         }
     }
 }
@@ -148,6 +150,11 @@ pub async fn send(
             } else {
                 builder = builder.no_proxy();
             }
+        }
+
+        // Cookie 会话：全局 jar 保持会话
+        if let Some(jar) = &opts.cookie_jar {
+            builder = builder.cookie_provider(jar.clone());
         }
 
         builder.build().map_err(|e| err("http", e.to_string()))?

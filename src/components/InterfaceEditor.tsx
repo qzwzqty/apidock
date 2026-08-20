@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Save, Send, Check, SlidersHorizontal, RotateCcw, Plus, Trash2 } from "lucide-react";
+import { marked } from "marked";
+import { Save, Send, Check, SlidersHorizontal, RotateCcw, Plus, Trash2, Eye, PencilLine } from "lucide-react";
 import type { Assertion, InterfaceFile, KeyValue } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,6 +40,7 @@ export function InterfaceEditor({
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [showOpts, setShowOpts] = useState(false);
+  const [preview, setPreview] = useState(false);
 
   // 外部 doc 变化（切换接口/外部刷新）时同步
   const [lastDocId, setLastDocId] = useState(doc.id);
@@ -160,16 +162,28 @@ export function InterfaceEditor({
         {tab === "assert" && <AssertionEditor rows={base.assertions} onChange={updateAssertions} />}
         {tab === "desc" && (
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">
-              接口说明（Markdown 渲染在后续版本）
-            </label>
-            <textarea
-              className="h-40 w-full resize-y rounded-md border border-border bg-muted p-2.5 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring"
-              value={base.description}
-              onChange={(e) => update({ description: e.target.value })}
-              placeholder="# 接口说明"
-
-            />
+            <div className="mb-1 flex items-center justify-between">
+              <label className="text-xs text-muted-foreground">接口说明（支持 Markdown）</label>
+              <div className="flex gap-1">
+                <Button size="sm" variant="outline" onClick={() => setPreview(!preview)}>
+                  {preview ? <PencilLine className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                  {preview ? "编辑" : "预览"}
+                </Button>
+              </div>
+            </div>
+            {preview ? (
+              <div
+                className="markdown-body prose prose-sm max-w-none rounded-md border border-border bg-muted p-3 text-sm text-foreground"
+                dangerouslySetInnerHTML={{ __html: marked.parse(base.description || "*暂无说明*") as string }}
+              />
+            ) : (
+              <textarea
+                className="h-40 w-full resize-y rounded-md border border-border bg-muted p-2.5 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring"
+                value={base.description}
+                onChange={(e) => update({ description: e.target.value })}
+                placeholder="# 接口说明"
+              />
+            )}
           </div>
         )}
       </div>

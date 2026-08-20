@@ -19,11 +19,16 @@ static WATCHER_TX: OnceLock<WatchSender> = OnceLock::new();
 pub struct AppState {
     root: Mutex<Option<PathBuf>>,
     watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    cookiejar: std::sync::Arc<reqwest::cookie::Jar>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        Self { root: Mutex::new(None), watcher: Mutex::new(None) }
+        Self {
+            root: Mutex::new(None),
+            watcher: Mutex::new(None),
+            cookiejar: std::sync::Arc::new(reqwest::cookie::Jar::default()),
+        }
     }
 }
 
@@ -114,12 +119,68 @@ fn delete_team(state: tauri::State<'_, AppState>, team_key: String) -> Result<()
 
 #[tauri::command]
 fn delete_project(
-    state: tauri::State<'_, AppState>,
+    state: State<'_, AppState>,
     team_key: String,
     project_key: String,
 ) -> Result<(), String> {
     let root = with_root(&state)?;
     storage::delete_project(&root, &team_key, &project_key)
+}
+
+#[tauri::command]
+fn rename_team(
+    state: State<'_, AppState>,
+    team_key: String,
+    new_key: String,
+    new_name: String,
+) -> Result<(), String> {
+    let root = with_root(&state)?;
+    let new_key = storage::sanitize_key(&new_key);
+    if new_key.is_empty() {
+        return Err("团队键不能为空".into());
+    }
+    storage::rename_team(&root, &team_key, &new_key, &new_name)
+}
+
+#[tauri::command]
+fn rename_project(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    new_key: String,
+    new_name: String,
+) -> Result<(), String> {
+    let root = with_root(&state)?;
+    let new_key = storage::sanitize_key(&new_key);
+    if new_key.is_empty() {
+        return Err("项目键不能为空".into());
+    }
+    storage::rename_project(&root, &team_key, &project_key, &new_key, &new_name)
+}
+
+#[tauri::command]
+fn move_interface(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    iface_key: String,
+    target_group_path: Vec<String>,
+) -> Result<String, String> {
+    let root = with_root(&state)?;
+    storage::move_interface(&root, &team_key, &project_key, &group_path, &iface_key, &target_group_path)
+}
+
+#[tauri::command]
+fn move_group(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    target_group_path: Vec<String>,
+) -> Result<(), String> {
+    let root = with_root(&state)?;
+    storage::move_group(&root, &team_key, &project_key, &group_path, &target_group_path)
 }
 
 #[tauri::command]
@@ -360,6 +421,10 @@ async fn send_request(
     })?;
     let opts = http::SendOptions {
         proxy: storage::read_workspace(&root).proxy,
+        cookie_jar: {
+            let jar = state.cookiejar.clone();
+            Some(jar)
+        },
         ..Default::default()
     };
     http::send(
@@ -572,6 +637,10 @@ pub fn run() {
             create_project,
             delete_team,
             delete_project,
+            rename_team,
+            rename_project,
+            move_interface,
+            move_group,
             save_workspace,
             list_interface_tree,
             create_group,

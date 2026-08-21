@@ -11,6 +11,7 @@ import { ImportExportDialog } from "@/components/ImportExportDialog";
 import { MoveTargetDialog } from "@/components/MoveTargetDialog";
 import { api, type EnvironmentSummary, type RunReport, type SendOutcome } from "@/lib/api";
 import { useProject } from "@/lib/project";
+import { useWorkspace } from "@/lib/workspace";
 import { cn } from "@/lib/utils";
 
 type DlgState =
@@ -404,9 +405,10 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
         initialMode={importExportMode}
         onClose={() => setShowImportExport(false)}
         onImported={async () => {
-          setRunState((s) => ({ ...s, open: false }));
+          // 导入可能新增接口（当前项目）或新增项目（新建项目导入），两者都刷新；
+          // 不在此关闭弹窗，便于用户查看导入报告（由弹窗内“关闭”按钮收起）
+          await useWorkspace.getState().loadTeamsAndProjects();
           await useProject.getState().loadTree(tabId, teamKey, projectKey);
-          setShowImportExport(false);
         }}
       />
     </div>

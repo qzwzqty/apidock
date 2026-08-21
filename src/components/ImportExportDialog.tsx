@@ -20,7 +20,7 @@ export function ImportExportDialog({
   open: boolean;
   initialMode?: "import" | "export";
   onClose: () => void;
-  onImported: () => void;
+  onImported: () => void | Promise<void>;
 }) {
   const teams = useWorkspace((s) => s.teams);
   const [mode, setMode] = useState<"import" | "export">(initialMode);
@@ -54,6 +54,8 @@ export function ImportExportDialog({
         const [report, name] = await api.importSpecNewProject(path, teams[0]?.key ?? "");
         setResult({ title: `新建项目完成：${name}`, report });
       }
+      // 导入成功后自动刷新接口树 / 项目列表（文件监听已移除，需显式触发）
+      await onImported();
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -143,11 +145,6 @@ export function ImportExportDialog({
       )}
 
       <DialogFooter>
-        {result && (result.report || mode === "import") && (
-          <Button variant="outline" onClick={onImported} className="mr-auto">
-            刷新接口树
-          </Button>
-        )}
         <Button variant="outline" onClick={onClose}>关闭</Button>
       </DialogFooter>
     </Dialog>

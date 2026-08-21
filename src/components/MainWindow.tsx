@@ -8,7 +8,6 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogFooter } from "@/components/ui/dialog";
 
 export function MainWindow() {
-  const dataRoot = useWorkspace((s) => s.dataRoot);
   const teams = useWorkspace((s) => s.teams);
   const selectedTeamKey = useWorkspace((s) => s.selectedTeamKey);
   const projects = useWorkspace((s) => s.projects);
@@ -20,7 +19,6 @@ export function MainWindow() {
   const deleteProject = useWorkspace((s) => s.deleteProject);
   const renameProject = useWorkspace((s) => s.renameProject);
   const openProject = useWorkspace((s) => s.openProject);
-  const pickDataRoot = useWorkspace((s) => s.pickDataRoot);
 
   const [teamQ, setTeamQ] = useState("");
   const [projQ, setProjQ] = useState("");
@@ -28,19 +26,6 @@ export function MainWindow() {
   const [showProjDlg, setShowProjDlg] = useState(false);
   const [renameTeamTarget, setRenameTeamTarget] = useState<TeamInfo | null>(null);
   const [renameProjTarget, setRenameProjTarget] = useState<ProjectInfo | null>(null);
-
-  if (!dataRoot) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-4">
-        <div className="text-3xl font-semibold tracking-tight">Apidock</div>
-        <p className="text-muted-foreground">纯离线的 API 管理工具</p>
-        <Button onClick={pickDataRoot}>选择数据根目录</Button>
-        <p className="text-xs text-muted-foreground">
-          选择或新建一个空文件夹作为数据根目录，所有数据将保存在其中的 apidock.db 数据库中
-        </p>
-      </div>
-    );
-  }
 
   const filteredTeams = teams.filter((t) => t.name.includes(teamQ.trim()));
   const selectedTeam = teams.find((t) => t.key === selectedTeamKey) ?? null;

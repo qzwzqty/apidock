@@ -51,41 +51,14 @@ async fn get_session(state: State<'_, AppState>) -> Result<AppSession, String> {
     build_session(&state).await
 }
 
-#[tauri::command]
-async fn set_data_root(state: State<'_, AppState>, path: String) -> Result<AppSession, String> {
-    let root = PathBuf::from(path);
-    let db = db::open(&root).await?;
-    persist_root(&root)?;
-    {
-        *state.root.lock().unwrap() = Some(root);
-        *state.db.lock().unwrap() = Some(db);
-    }
-    build_session(&state).await
-}
-
-#[tauri::command]
-fn get_data_root(state: State<'_, AppState>) -> Option<String> {
-    state
-        .root
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|p| p.to_string_lossy().into_owned())
-}
-
-/// 若数据库未打开则尝试从上次记录的数据根恢复
+/// 若数据库未打开则打开固定的默认数据根 <home>/.apidock（自动创建）
 async fn ensure_open(state: &AppState) -> Result<(), String> {
     let already = state.db.lock().unwrap().is_some();
     if already {
         return Ok(());
     }
-    // 优先恢复上次选择的数据根；没有则回落到默认根 <home>/.apidock（自动创建）
-    let root = match restore_root_path() {
-        Some(r) => r,
-        None => default_data_root().ok_or("无法确定用户主目录，请手动选择数据根目录")?,
-    };
+    let root = default_data_root().ok_or("无法确定用户主目录")?;
     let db = db::open(&root).await?;
-    let _ = persist_root(&root);
     *state.root.lock().unwrap() = Some(root);
     *state.db.lock().unwrap() = Some(db);
     Ok(())
@@ -102,7 +75,7 @@ fn with_db(state: &AppState) -> Result<DatabaseConnection, String> {
         .lock()
         .unwrap()
         .clone()
-        .ok_or_else(|| "尚未选择数据根目录".to_string())
+        .ok_or_else(|| "数据尚未就绪".to_string())
 }
 
 async fn build_session(state: &AppState) -> Result<AppSession, String> {
@@ -122,27 +95,6 @@ async fn build_session(state: &AppState) -> Result<AppSession, String> {
             workspace: WorkspaceState::new(),
         }),
     }
-}
-
-fn restore_root_path() -> Option<PathBuf> {
-    let text = std::fs::read_to_string(recent_root_path_file()).ok()?;
-    let buf = PathBuf::from(text.trim());
-    buf.is_dir().then_some(buf)
-}
-
-fn recent_root_path_file() -> PathBuf {
-    let base = dirs::config_dir()
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("apidock").join("recent-data-root.txt")
-}
-
-fn persist_root(root: &PathBuf) -> Result<(), String> {
-    let file = recent_root_path_file();
-    if let Some(dir) = file.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&file, root.to_string_lossy().as_ref()).map_err(|e| e.to_string())
 }
 
 // ----- 团队 / 项目 -----
@@ -805,8 +757,6 @@ pub fn run() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             get_session,
-            set_data_root,
-            get_data_root,
             list_teams,
             list_projects,
             create_team,
@@ -861,11 +811,5 @@ mod tests {
         // 只断言路径形态，不创建目录
         let root = default_data_root().expect("应能解析用户主目录");
         assert!(root.ends_with(".apidock"), "默认根应为 <home>/.apidock，实际：{}", root.display());
-    }
-
-    #[test]
-    fn recent_root_file_name() {
-        let f = recent_root_path_file();
-        assert!(f.ends_with("recent-data-root.txt"), "实际：{}", f.display());
     }
 }

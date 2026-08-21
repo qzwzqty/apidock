@@ -18,7 +18,6 @@ export function sanitizeKey(raw: string): string {
 }
 
 interface WorkspaceStore {
-  dataRoot: string | null;
   teams: TeamInfo[];
   selectedTeamKey: string | null;
   projects: ProjectInfo[];
@@ -29,7 +28,6 @@ interface WorkspaceStore {
   error: string | null;
 
   init: () => Promise<void>;
-  pickDataRoot: () => Promise<void>;
   onSession: (session: AppSession) => void;
   refreshTeam: (teamKey: string) => Promise<void>;
   loadTeamsAndProjects: () => Promise<void>;
@@ -47,7 +45,6 @@ interface WorkspaceStore {
 }
 
 export const useWorkspace = create<WorkspaceStore>()((set, get) => ({
-  dataRoot: null,
   teams: [],
   selectedTeamKey: null,
   projects: [],
@@ -67,13 +64,6 @@ export const useWorkspace = create<WorkspaceStore>()((set, get) => ({
     set({ bootstrapped: true });
   },
 
-  pickDataRoot: async () => {
-    const path = await api.pickDataRoot();
-    if (!path) return;
-    const session = await api.setDataRoot(path);
-    get().onSession(session);
-  },
-
   onSession: (session) => {
     const tabs = session.workspace.openTabs.filter(
       (t) => session.teams.some((team) => team.key === t.teamKey),
@@ -84,7 +74,6 @@ export const useWorkspace = create<WorkspaceStore>()((set, get) => ({
         tabs.some((t) => tabId(t) === session.workspace.activeTab));
     const firstTeam = session.teams[0]?.key ?? null;
     set({
-      dataRoot: session.dataRoot,
       teams: session.teams,
       selectedTeamKey: firstTeam,
       openTabs: tabs,

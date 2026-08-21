@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
 
 export interface TeamInfo {
   key: string;
@@ -281,13 +280,6 @@ export interface CreatedInterface {
 
 export const api = {
   getSession: () => invoke<AppSession>("get_session"),
-  pickDataRoot: async (): Promise<string | null> => {
-    const picked = await open({ directory: true, multiple: false, title: "选择数据根目录" });
-    if (typeof picked !== "string" || !picked) return null;
-    await invoke<AppSession>("set_data_root", { path: picked });
-    return picked;
-  },
-  setDataRoot: (path: string) => invoke<AppSession>("set_data_root", { path }),
   listTeams: () => invoke<TeamInfo[]>("list_teams"),
   listProjects: (teamKey: string) => invoke<ProjectInfo[]>("list_projects", { teamKey }),
   createTeam: (name: string, description?: string) =>

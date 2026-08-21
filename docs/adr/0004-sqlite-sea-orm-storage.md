@@ -17,7 +17,7 @@ ADR-0002 选择了「文件即真相」：团队/项目/分组为目录、接口
 数据根目录内改用单一 SQLite 数据库 `apidock.db` 作为唯一存储，Rust 侧通过 sea-orm（sqlx 后端）访问：
 
 - **数据根目录语义不变**：打开一个文件夹就是全部数据，复制根目录仍可整体备份/迁移；`apidock.db` 与未来的模块数据都在根目录内。
-- **默认根目录**：未选择过根目录时，默认使用 `<用户主目录>/.apidock`（主目录经 `dirs` 按操作系统解析），首次启动自动创建并落库；「上次选择的根」记录在配置目录 `apidock/recent-data-root.txt`，优先于默认值。
+- **固定根目录、不可选择**：根目录恒为 `<用户主目录>/.apidock`（主目录经 `dirs` 按操作系统解析），首次启动自动创建并落库；不提供选择/切换根目录的交互（`set_data_root`/`get_data_root` 命令与 `recent-data-root.txt` 指针机制均已移除）。
 - **表结构**：`teams / projects / groups / interfaces / environments / workspace`。分组用 `parent_id` 邻接表，每项目有一个 `parent_id IS NULL` 的根分组哨兵行，规避 SQLite 中 NULL 不参与 UNIQUE 约束的问题；唯一约束为「同父级内键唯一」，与旧目录语义一致。
 - **关系表 + JSON 混合列**：实体身份字段（key/name/method 等）建普通列与索引；接口的深嵌套定义（headers/query/body 结构树/auth/assertions）整体存 `doc` JSON 列，保持整文档读写语义，避免对递归结构过度范式化。
 - **一次性迁移**：首次打开含旧文件数据（`api-mgmt/`、`workspace.json`）的根目录时，在单个事务内导入数据库，成功后旧文件归档至 `.file-storage-backup-<时间戳>/`，不删除。

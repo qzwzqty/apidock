@@ -1,8 +1,9 @@
 use crate::assertions::{self, AssertionResult};
+use crate::db::repo;
+use crate::domain;
 use crate::http::{self, SendOptions};
-use crate::storage;
+use sea_orm::DatabaseConnection;
 use serde::Serialize;
-use std::path::Path;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,18 +31,18 @@ pub struct RunReport {
 
 /// 收集接口引用（路径列表）
 fn collect(
-    nodes: &[storage::TreeNode],
+    nodes: &[domain::TreeNode],
     base: Vec<String>,
     out: &mut Vec<(Vec<String>, String)>,
 ) {
     for n in nodes {
         match n {
-            storage::TreeNode::Group { key, children, .. } => {
+            domain::TreeNode::Group { key, children, .. } => {
                 let mut p = base.clone();
                 p.push(key.clone());
                 collect(children, p, out);
             }
-            storage::TreeNode::Interface { key, .. } => {
+            domain::TreeNode::Interface { key, .. } => {
                 out.push((base.clone(), key.clone()));
             }
         }
@@ -49,17 +50,20 @@ fn collect(
 }
 
 pub async fn run_project(
-    root: &Path,
+    db: &DatabaseConnection,
     team_key: &str,
     project_key: &str,
     filter_group: Option<&[String]>,
 ) -> Result<RunReport, String> {
-    let settings = storage::get_project_settings(root, team_key, project_key)?;
-    let env_id = settings.active_environment_id.clone().unwrap_or_else(|| "env-prod".into());
-    let env = storage::get_environment(root, team_key, project_key, &env_id)?;
-    let proxy = storage::read_workspace(root).proxy;
+    let settings = repo::get_project_settings(db, team_key, project_key).await?;
+    let env_id = settings
+        .active_environment_id
+        .clone()
+        .unwrap_or_else(|| "env-prod".into());
+    let env = repo::get_environment(db, team_key, project_key, &env_id).await?;
+    let proxy = repo::get_workspace(db).await.proxy;
 
-    let tree = storage::list_interface_tree(root, team_key, project_key);
+    let tree = repo::list_interface_tree(db, team_key, project_key).await;
     let mut refs = Vec::new();
     collect(&tree, Vec::new(), &mut refs);
 
@@ -74,7 +78,7 @@ pub async fn run_project(
                 continue;
             }
         }
-        let iface = match storage::get_interface(root, team_key, project_key, &group_path, &key) {
+        let iface = match repo::get_interface(db, team_key, project_key, &group_path, &key).await {
             Ok(i) => i,
             Err(e) => {
                 failed += 1;
@@ -152,7 +156,7 @@ pub async fn run_project(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{self, Assertion};
+    use crate::domain::{Assertion, InterfaceFile};
 
     #[tokio::test]
     async fn run_project_end_to_end() {
@@ -177,28 +181,26 @@ mod tests {
             }
         });
 
-        let root = std::env::temp_dir().join(format!("apidock-runner-test-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        storage::ensure_root(&root).unwrap();
-        storage::create_team(&root, "ops", "运维").unwrap();
-        storage::create_project(&root, "ops", "p", "项目").unwrap();
+        let db = crate::db::tests_support::temp_db("runner").await;
+        repo::create_team(&db, "ops", "运维").await.unwrap();
+        repo::create_project(&db, "ops", "p", "项目").await.unwrap();
 
         // 两个接口：一个断言通过，一个断言失败（404 vs 期望 200）
-        let mut ok_iface = storage::InterfaceFile::new("ok");
+        let mut ok_iface = InterfaceFile::new("ok");
         ok_iface.url = format!("http://{addr}/ok");
         ok_iface.assertions = vec![Assertion::StatusCode { op: "eq".into(), expected: 200 }];
-        let mut bad_iface = storage::InterfaceFile::new("bad");
+        let mut bad_iface = InterfaceFile::new("bad");
         bad_iface.url = format!("http://{addr}/bad");
         bad_iface.assertions = vec![
             Assertion::StatusCode { op: "eq".into(), expected: 200 },
             Assertion::JsonPath { path: "$.code".into(), op: "eq".into(), expected: "0".into() },
         ];
-        storage::create_interface(&root, "ops", "p", &[], "ok", "健康").unwrap();
-        storage::create_interface(&root, "ops", "p", &[], "bad", "坏了").unwrap();
-        storage::save_interface(&root, "ops", "p", &[], "ok", &ok_iface).unwrap();
-        storage::save_interface(&root, "ops", "p", &[], "bad", &bad_iface).unwrap();
+        repo::create_interface(&db, "ops", "p", &[], "ok", "健康").await.unwrap();
+        repo::create_interface(&db, "ops", "p", &[], "bad", "坏了").await.unwrap();
+        repo::save_interface(&db, "ops", "p", &[], "ok", &ok_iface).await.unwrap();
+        repo::save_interface(&db, "ops", "p", &[], "bad", &bad_iface).await.unwrap();
 
-        let report = run_project(&root, "ops", "p", None).await.unwrap();
+        let report = run_project(&db, "ops", "p", None).await.unwrap();
         assert_eq!(report.total, 2);
         assert_eq!(report.passed, 1);
         assert_eq!(report.failed, 1);
@@ -206,10 +208,8 @@ mod tests {
         assert!(!bad.ok);
         assert!(!bad.assertion_results.iter().all(|r| r.passed));
 
-        // 分组过滤：空分组路径应只跑该分组
-        let report2 = run_project(&root, "ops", "p", Some(&["__none__".to_string()])).await.unwrap();
+        // 分组过滤：不存在的分组前缀应跑出 0 条
+        let report2 = run_project(&db, "ops", "p", Some(&["__none__".to_string()])).await.unwrap();
         assert_eq!(report2.total, 0);
-
-        std::fs::remove_dir_all(&root).unwrap();
     }
 }

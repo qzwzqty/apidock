@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { FolderPlus, FilePlus2, MoreVertical, Upload, Download, X, Settings2, ChevronDown, FileText, Loader2 } from "lucide-react";
 import { InterfaceTree, PromptDialog, type IfaceRef } from "@/components/InterfaceTree";
@@ -77,23 +76,6 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
   useEffect(() => {
     void loadTree(tabId, teamKey, projectKey);
     void loadEnvs();
-  }, [tabId, teamKey, projectKey]);
-
-  // 外部变更（git pull / 外部编辑器 / 其它实例）自动刷新
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    let promise: Promise<() => void> | undefined;
-    void (promise = listen<string>("fs://changed", () => {
-      if (disposed) return;
-      void useProject.getState().loadTree(tabId, teamKey, projectKey);
-      void loadEnvs();
-    }));
-    return () => {
-      disposed = true;
-      if (unlisten) unlisten();
-      if (promise) void Promise.resolve(promise).then((f) => f());
-    };
   }, [tabId, teamKey, projectKey]);
 
   const activeTabObj = proj?.openTabs.find((t) => t.id === proj.activeTab);

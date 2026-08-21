@@ -14,10 +14,10 @@
 | 前端样式/组件 | Tailwind CSS + shadcn/ui（Radix 原语） | 紧凑深色桌面风、按需打包、可完全自定义 |
 | 代码编辑器 | Monaco Editor | 请求体 JSON/raw 编辑、语法高亮 |
 | HTTP 客户端 | reqwest 0.13 | `default-features=false, features=["rustls","http2","system-proxy","multipart","json","charset","gzip/br"]` |
-| 异步运行时 | tokio | 请求执行、文件监听 |
-| 序列化 | serde / serde_json | 存储与请求结构；读取前用 json_comments 剥离注释（JSONC），写入生成标准 JSON |
+| 异步运行时 | tokio | 请求执行、数据库访问 |
+| 序列化 | serde / serde_json | 领域结构与请求；嵌套结构以 JSON 文本列入库 |
 | YAML | serde_yaml_ng | OpenAPI YAML 解析（serde_yaml 已停更，优先维护中的 fork） |
-| 文件监听 | notify | 外部变更刷新 |
+| 数据库 | sea-orm 1.x + sea-orm-migration（sqlx SQLite 后端） | 数据根目录内单一 `apidock.db`；迁移框架管理表结构（ADR-0004） |
 | OpenAPI 模型 | openapiv3 2.x（3.0）；oas3 0.2x（3.1） | 导入导出双向 |
 | 前端状态 | zustand（轻量） | 树、当前请求、响应状态 |
 | 数据校验（可选） | schemars | 为导出 OpenAPI 补全 schema |
@@ -33,29 +33,30 @@
 ┌───────────────▼──────────────────────────────────────────────────────────▼──┐
 │                              Rust (Tauri core)                              │
 │  ┌───────────┐  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐   │
-│  │ storage   │  │   http       │  │  variables   │  │ import / export   │   │
-│  │ 文件树扫描 │─▶│ reqwest client│  │ {{var}} 替换 │  │ openapiv3 / oas3  │   │
-│  │ 原子写    │  │ TLS/代理/超时 │  │ JSONPath 提取│  │ postman 导入      │   │
-│  │ notify    │  └──────────────┘  └──────────────┘  └───────────────────┘   │
+│  │ db        │  │   http       │  │  variables   │  │ import / export   │   │
+│  │ sea-orm   │─▶│ reqwest client│  │ {{var}} 替换 │  │ openapiv3 / oas3  │   │
+│  │ 实体/迁移 │  │ TLS/代理/超时 │  │ JSONPath 提取│  │ postman 导入      │   │
+│  │ 仓储/事务 │  └──────────────┘  └──────────────┘  └───────────────────┘   │
 │  └───────────┘                                                              │
 └──────────────────────────┬───────────────────────────────────────────────────┘
                            ▼
-                数据根目录（团队/项目/分组 文件夹 + JSONC 文件）
+                数据根目录（apidock.db，SQLite / WAL）
 ```
 
 要点：
 - **所有网络请求在 Rust 侧执行**，前端不持有任何 HTTP 能力，保证 TLS 策略、代理、证书导入统一收敛在 `http` 模块。
 - UI（egui 无需，这里指 React）与 HTTP 通过 async command 交互：`invoke("send_request", payload)` 返回响应数据；长任务用事件推送进度/取消。
-- 文件监听 `notify` 触发后，由 Rust 重新扫描目录树并 `emit` 事件，前端据此刷新，避免双端状态漂移。
+- 数据只经由命令层读写 SQLite，写操作返回值即最新状态，前端据此刷新（不再有外部文件变更监听）。
 
 ## 3. 模块划分（Rust）
 
 ```
 src-tauri/src/
 ├── main.rs / lib.rs         # Tauri 入口、managed state、invoke 注册
-├── domain/                  # 纯数据结构（无 IO）：Team/Project/Group/Interface/
-│   └── ...                  #   Environment/GlobalParams/Variable/Auth/Body/Assertion
-├── storage/                 # 数据根目录扫描、读写、原子写、notify 监听、命名规则
+├── domain.rs                # 纯数据结构（无 IO）：Team/Project/Group/Interface/
+│                            #   Environment/GlobalParams/Variable/Auth/Body/Assertion
+├── db/                      # SQLite 持久化：实体、sea-orm-migration 迁移、仓储（事务/唯一约束）
+├── legacy.rs                # 旧版文件数据一次性导入（JSONC 宽容解析仅存于此）
 ├── http/                    # reqwest 构建、TLS/CA/代理/超时/重定向、请求执行与取消
 ├── variables/               # {{var}} 模板解析与替换、JSONPath 实现（可选引入 jsonpath 库）
 ├── importer/                # OpenAPI 3.0/3.1、Postman Collection v2 → domain

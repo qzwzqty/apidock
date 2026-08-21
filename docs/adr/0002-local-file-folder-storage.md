@@ -1,6 +1,7 @@
 # ADR-0002: 采用本地文件 + 文件夹作为唯一存储
 
-**状态**: accepted（2026-08-20 v2：更新为团队/项目模型与 JSONC）
+**状态**: superseded（2026-08-21 由 [ADR-0004](0004-sqlite-sea-orm-storage.md) 取代：存储改为数据根目录内的 SQLite + sea-orm；本文件保留作历史记录）
+~~accepted（2026-08-20 v2：更新为团队/项目模型与 JSONC）~~
 
 产品核心卖点是"纯离线 + 数据是文件"。数据根目录即数据源，按**模块**划分（当前为接口管理模块 `api-mgmt/`，未来新模块并列目录）；模块内团队/项目/分组为目录、接口为单个含 `version`/`id`/`name` 字段的 JSONC 文件；`workspace.json`、`team.json`、`project.json`、`group.json` 与 `environments/*.json` 保存元数据（环境与全局变量/全局参数挂在项目上）。不做数据库、不做服务端同步。
 

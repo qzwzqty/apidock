@@ -1,7 +1,7 @@
-use crate::storage;
+use crate::domain;
+use sea_orm::DatabaseConnection;
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::path::Path;
 
 /// 从一个外部文档解析出的“待导入接口”
 #[derive(Debug, Clone)]
@@ -11,10 +11,10 @@ pub struct ImportedIface {
     pub name: String,
     pub method: String,
     pub url: String,
-    pub headers: Vec<storage::ApiParam>,
-    pub query: Vec<storage::ApiParam>,
-    pub body: storage::Body,
-    pub auth: storage::Auth,
+    pub headers: Vec<domain::ApiParam>,
+    pub query: Vec<domain::ApiParam>,
+    pub body: domain::Body,
+    pub auth: domain::Auth,
     pub description: String,
 }
 
@@ -27,13 +27,13 @@ pub struct ImportReport {
 }
 
 impl ImportedIface {
-    pub fn to_file(&self) -> storage::InterfaceFile {
-        storage::InterfaceFile::new(&self.key)
+    pub fn to_file(&self) -> domain::InterfaceFile {
+        domain::InterfaceFile::new(&self.key)
     }
 }
 
 fn sanitize(value: &str) -> String {
-    crate::storage::sanitize_key(value)
+    crate::domain::sanitize_key(value)
 }
 
 /// 由 JSON Schema 生成示例值（规范未提供 example 时，用于填充请求体）
@@ -110,11 +110,11 @@ fn schema_example(schema: &Value, components: &Value) -> Value {
 }
 
 /// JSON Schema → 请求体结构树（Apifox 式字段树）
-fn schema_to_json_body(schema: &Value, components: &Value) -> storage::JsonBody {
-    storage::JsonBody { root: schema_to_field(schema, components).unwrap_or_default() }
+fn schema_to_json_body(schema: &Value, components: &Value) -> domain::JsonBody {
+    domain::JsonBody { root: schema_to_field(schema, components).unwrap_or_default() }
 }
 
-fn schema_to_field(schema: &Value, components: &Value) -> Option<storage::BodyField> {
+fn schema_to_field(schema: &Value, components: &Value) -> Option<domain::BodyField> {
     let mut schema = schema.clone();
     // 解开 $ref
     while let Some(r) = schema.get("$ref").and_then(|v| v.as_str()) {
@@ -163,7 +163,7 @@ fn schema_to_field(schema: &Value, components: &Value) -> Option<storage::BodyFi
                     }
                 }
             }
-            Some(storage::BodyField {
+            Some(domain::BodyField {
                 field_type: "object".into(),
                 name: title,
                 description,
@@ -176,7 +176,7 @@ fn schema_to_field(schema: &Value, components: &Value) -> Option<storage::BodyFi
                 .get("items")
                 .and_then(|i| schema_to_field(i, components))
                 .map(Box::new);
-            Some(storage::BodyField { field_type: "array".into(), name: title, description, items, ..Default::default() })
+            Some(domain::BodyField { field_type: "array".into(), name: title, description, items, ..Default::default() })
         }
         t => {
             let example = schema
@@ -188,7 +188,7 @@ fn schema_to_field(schema: &Value, components: &Value) -> Option<storage::BodyFi
                     other => other.to_string(),
                 })
                 .unwrap_or_default();
-            Some(storage::BodyField {
+            Some(domain::BodyField {
                 field_type: t.to_string(),
                 name: title,
                 description,
@@ -200,28 +200,28 @@ fn schema_to_field(schema: &Value, components: &Value) -> Option<storage::BodyFi
 }
 
 /// 从 JSON 文本解析出结构树（导入时兜底用）
-fn json_value_to_body(content_str: &str) -> storage::JsonBody {
+fn json_value_to_body(content_str: &str) -> domain::JsonBody {
     let Ok(v) = serde_json::from_str::<Value>(content_str) else {
-        return storage::JsonBody::default();
+        return domain::JsonBody::default();
     };
-    storage::JsonBody { root: value_to_field(&v).unwrap_or_default() }
+    domain::JsonBody { root: value_to_field(&v).unwrap_or_default() }
 }
 
-fn value_to_field(v: &Value) -> Option<storage::BodyField> {
+fn value_to_field(v: &Value) -> Option<domain::BodyField> {
     if v.is_null() {
-        return Some(storage::BodyField { field_type: "null".into(), ..Default::default() });
+        return Some(domain::BodyField { field_type: "null".into(), ..Default::default() });
     }
     if let Some(obj) = v.as_object() {
         let mut children = Vec::new();
         for (k, sub) in obj {
-            let mut f = value_to_field(sub).unwrap_or_else(|| storage::BodyField::new(k));
+            let mut f = value_to_field(sub).unwrap_or_else(|| domain::BodyField::new(k));
             f.key = k.clone();
             children.push(f);
         }
-        return Some(storage::BodyField { field_type: "object".into(), children, ..Default::default() });
+        return Some(domain::BodyField { field_type: "object".into(), children, ..Default::default() });
     }
     if let Some(arr) = v.as_array() {
-        return Some(storage::BodyField {
+        return Some(domain::BodyField {
             field_type: "array".into(),
             items: arr.first().and_then(value_to_field).map(Box::new),
             ..Default::default()
@@ -243,7 +243,7 @@ fn value_to_field(v: &Value) -> Option<storage::BodyField> {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     };
-    Some(storage::BodyField { field_type: field_type.into(), example, ..Default::default() })
+    Some(domain::BodyField { field_type: field_type.into(), example, ..Default::default() })
 }
 
 /// 解析 OpenAPI 3.x（JSON 或 YAML）→ 待导入接口列表
@@ -334,7 +334,7 @@ pub fn parse_openapi(content: &str, is_yaml: bool) -> Result<(String, Vec<Import
 
                 let mut headers = Vec::new();
                 let mut query = Vec::new();
-                let mut body = storage::Body::default();
+                let mut body = domain::Body::default();
 
                 if let Some(params) = op.get("parameters").and_then(|p| p.as_array()) {
                     for p in params {
@@ -379,7 +379,7 @@ pub fn parse_openapi(content: &str, is_yaml: bool) -> Result<(String, Vec<Import
                             .or_else(|| schema.and_then(|s| s.get("description")).and_then(|d| d.as_str()))
                             .unwrap_or("")
                             .to_string();
-                        let param = storage::ApiParam {
+                        let param = domain::ApiParam {
                             key: k,
                             example: example_str,
                             required,
@@ -429,7 +429,7 @@ if let Some(rb) = op.get("requestBody") {
                             if json_tree.is_empty() {
                                 json_tree = json_value_to_body(&content_str);
                             }
-                            body = storage::Body {
+                            body = domain::Body {
                                 mode: "json".into(),
                                 content: content_str,
                                 content_type: "application/json".into(),
@@ -442,7 +442,7 @@ if let Some(rb) = op.get("requestBody") {
                                 .and_then(|e| e.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            body = storage::Body {
+                            body = domain::Body {
                                 mode: "raw".into(),
                                 content: content_str,
                                 content_type: "text/plain".into(),
@@ -451,14 +451,14 @@ if let Some(rb) = op.get("requestBody") {
                         }
                     }
 
-                let mut auth = storage::Auth::default();
+                let mut auth = domain::Auth::default();
                 if let Some(kind) = &security_required {
                     match kind.as_str() {
                         "bearer" => {
-                            auth = storage::Auth { kind: "bearer".into(), token: "{{token}}".into(), ..Default::default() };
+                            auth = domain::Auth { kind: "bearer".into(), token: "{{token}}".into(), ..Default::default() };
                         }
                         "basic" => {
-                            auth = storage::Auth {
+                            auth = domain::Auth {
                                 kind: "basic".into(),
                                 username: "{{username}}".into(),
                                 password: "{{password}}".into(),
@@ -466,7 +466,7 @@ if let Some(rb) = op.get("requestBody") {
                             };
                         }
                         "api-key" => {
-                            auth = storage::Auth {
+                            auth = domain::Auth {
                                 kind: "api-key".into(),
                                 api_key_name: "X-API-Key".into(),
                                 api_key_in: "header".into(),
@@ -555,16 +555,16 @@ fn walk_postman_items(items: &Value, base: Vec<String>) -> Vec<ImportedIface> {
                         }
                         let v = h.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let description = h.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string();
-                        headers.push(storage::ApiParam { key: k, example: v, description, enabled: true, ..Default::default() });
+                        headers.push(domain::ApiParam { key: k, example: v, description, enabled: true, ..Default::default() });
                     }
                 }
-                let mut body = storage::Body::default();
+                let mut body = domain::Body::default();
                 if let Some(b) = req.get("body") {
                     let mode = b.get("mode").and_then(|m| m.as_str()).unwrap_or("");
                     match mode {
                         "raw" => {
                             let raw_str = b.get("raw").and_then(|r| r.as_str()).unwrap_or("").to_string();
-                            body = storage::Body {
+                            body = domain::Body {
                                 mode: "raw".into(),
                                 content: raw_str,
                                 content_type: "text/plain".into(),
@@ -572,13 +572,13 @@ fn walk_postman_items(items: &Value, base: Vec<String>) -> Vec<ImportedIface> {
                             };
                         }
                         "urlencoded" => {
-                            let form: Vec<storage::ApiParam> = b.get("urlencoded")
+                            let form: Vec<domain::ApiParam> = b.get("urlencoded")
                                 .and_then(|u| u.as_array()).unwrap_or(&Vec::new())
                                 .iter()
                                 .filter_map(|x| {
                                     let key = x.get("key").and_then(|k| k.as_str()).unwrap_or("").to_string();
                                     if key.is_empty() { return None; }
-                                    Some(storage::ApiParam {
+                                    Some(domain::ApiParam {
                                         key,
                                         example: x.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                                         enabled: true,
@@ -586,20 +586,20 @@ fn walk_postman_items(items: &Value, base: Vec<String>) -> Vec<ImportedIface> {
                                     })
                                 })
                                 .collect();
-                            body = storage::Body {
+                            body = domain::Body {
                                 mode: "urlencoded".into(),
                                 form,
                                 ..Default::default()
                             };
                         }
                         "formdata" => {
-                            let form: Vec<storage::ApiParam> = b.get("formdata")
+                            let form: Vec<domain::ApiParam> = b.get("formdata")
                                 .and_then(|u| u.as_array()).unwrap_or(&Vec::new())
                                 .iter()
                                 .filter_map(|x| {
                                     let key = x.get("key").and_then(|k| k.as_str()).unwrap_or("").to_string();
                                     if key.is_empty() { return None; }
-                                    Some(storage::ApiParam {
+                                    Some(domain::ApiParam {
                                         key,
                                         example: x.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                                         description: x.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string(),
@@ -608,14 +608,14 @@ fn walk_postman_items(items: &Value, base: Vec<String>) -> Vec<ImportedIface> {
                                     })
                                 })
                                 .collect();
-                            body = storage::Body {
+                            body = domain::Body {
                                 mode: "form-data".into(),
                                 form,
                                 ..Default::default()
                             };
                         }
                         "file" => {
-                            body = storage::Body { mode: "file".into(), ..Default::default() };
+                            body = domain::Body { mode: "file".into(), ..Default::default() };
                         }
                         _ => {}
                     }
@@ -630,7 +630,7 @@ fn walk_postman_items(items: &Value, base: Vec<String>) -> Vec<ImportedIface> {
                     headers,
                     query,
                     body,
-                    auth: storage::Auth::default(),
+                    auth: domain::Auth::default(),
                     description: String::new(),
                 });
             }
@@ -647,7 +647,7 @@ fn walk_postman_items(items: &Value, base: Vec<String>) -> Vec<ImportedIface> {
     out
 }
 
-fn extract_postman_url(req: &Value) -> (String, Vec<storage::ApiParam>) {
+fn extract_postman_url(req: &Value) -> (String, Vec<domain::ApiParam>) {
     if let Some(r) = req.get("url").and_then(|u| u.as_str()) {
         return (r.to_string(), Vec::new());
     }
@@ -662,7 +662,7 @@ fn extract_postman_url(req: &Value) -> (String, Vec<storage::ApiParam>) {
         for q in qs {
             let k = q.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
             if k.is_empty() { continue; }
-            let param = storage::ApiParam {
+            let param = domain::ApiParam {
                 key: k,
                 example: q.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 description: q.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string(),
@@ -677,7 +677,7 @@ fn extract_postman_url(req: &Value) -> (String, Vec<storage::ApiParam>) {
 
 /// 用户输入/规范中的名称直接作为接口文件名：合法则原样使用，否则把非法字符替换为 `-`
 fn import_name(raw: &str) -> String {
-    if let Ok(n) = crate::storage::validate_name(raw) {
+    if let Ok(n) = crate::domain::validate_name(raw) {
         return n;
     }
     let replaced: String = raw
@@ -699,9 +699,9 @@ fn import_name(raw: &str) -> String {
     }
 }
 
-/// 把待导入接口写入目标项目
-pub fn import_into_project(
-    root: &Path,
+/// 把待导入接口写入目标项目（数据库）
+pub async fn import_into_project(
+    db: &DatabaseConnection,
     team_key: &str,
     project_key: &str,
     ifaces: &[ImportedIface],
@@ -715,7 +715,7 @@ pub fn import_into_project(
         for seg in &iface.group_path {
             path.push(seg.clone());
             let prefix = &path[..path.len() - 1];
-            let _ = storage::create_group(root, team_key, project_key, prefix, seg, seg);
+            let _ = crate::db::repo::create_group(db, team_key, project_key, prefix, seg, seg).await;
         }
     }
 
@@ -731,7 +731,7 @@ pub fn import_into_project(
         if final_name != name {
             report.warnings.push(format!("接口名称 {name} 在本目录重复，已重命名为 {final_name}"));
         }
-        if let Err(e) = storage::create_interface(root, team_key, project_key, &iface.group_path, &final_name, &final_name) {
+        if let Err(e) = crate::db::repo::create_interface(db, team_key, project_key, &iface.group_path, &final_name, &final_name).await {
             report.skipped += 1;
             report.warnings.push(format!("接口 {name} 创建失败：{e}"));
             continue;
@@ -745,7 +745,7 @@ pub fn import_into_project(
         f.body = iface.body.clone();
         f.auth = iface.auth.clone();
         f.description = iface.description.clone();
-        match storage::save_interface(root, team_key, project_key, &iface.group_path, &final_name, &f) {
+        match crate::db::repo::save_interface(db, team_key, project_key, &iface.group_path, &final_name, &f).await {
             Ok(_) => report.total += 1,
             Err(e) => {
                 report.skipped += 1;
@@ -762,62 +762,67 @@ pub struct ExportOutcome {
 }
 
 /// 把项目的接口树导出为 OpenAPI 3.0（JSON 或 YAML）
-pub fn export_openapi(root: &Path, team_key: &str, project_key: &str, want_yaml: bool) -> Result<ExportOutcome, String> {
-    let settings = crate::storage::get_project_settings(root, team_key, project_key)?;
-    let tree = crate::storage::list_interface_tree(root, team_key, project_key);
+pub async fn export_openapi(
+    db: &DatabaseConnection,
+    team_key: &str,
+    project_key: &str,
+    want_yaml: bool,
+) -> Result<ExportOutcome, String> {
+    let settings = crate::db::repo::get_project_settings(db, team_key, project_key).await?;
+    let tree = crate::db::repo::list_interface_tree(db, team_key, project_key).await;
     let mut warnings = Vec::new();
     let mut paths: serde_json::Map<String, Value> = serde_json::Map::new();
 
-    fn walk_nodes(
-        nodes: &[crate::storage::TreeNode],
-        base: Vec<String>,
-        paths: &mut serde_json::Map<String, Value>,
-        hosts: &mut Vec<String>,
-        team: &str,
-        proj: &str,
-        root: &Path,
-        warnings: &mut Vec<String>,
-    ) {
-        for node in nodes {
-            match node {
-                crate::storage::TreeNode::Group { key, children, .. } => {
-                    let mut p = base.clone();
-                    p.push(key.clone());
-                    walk_nodes(children, p, paths, hosts, team, proj, root, warnings);
-                }
-                crate::storage::TreeNode::Interface { key, .. } => {
-                    let Ok(iface) = storage::get_interface(root, team, proj, &base, key) else { continue };
-                    let (method, path_str, operation, host) = build_interface_operation(&iface, proj, key, warnings);
-                    if let Some(h) = &host {
-                        if !hosts.contains(h) {
-                            hosts.push(h.clone());
-                        }
-                    }
-                    let entry = paths.entry(path_str).or_insert_with(|| json!({}));
-                    entry[method] = operation;
-                }
+    let mut hosts: Vec<String> = Vec::new();
+    let mut iface_refs: Vec<(Vec<String>, String)> = Vec::new();
+    flatten_ifaces(&tree, Vec::new(), &mut iface_refs);
+    for (group_path, key) in iface_refs {
+        let Ok(iface) = crate::db::repo::get_interface(db, team_key, project_key, &group_path, &key).await
+        else {
+            continue;
+        };
+        let (method, path_str, operation, host) = build_interface_operation(&iface, project_key, &key, &mut warnings);
+        if let Some(h) = &host {
+            if !hosts.contains(h) {
+                hosts.push(h.clone());
             }
         }
+        let entry = paths.entry(path_str).or_insert_with(|| json!({}));
+        entry[method] = operation;
     }
-
-    let mut hosts: Vec<String> = Vec::new();
-    walk_nodes(&tree, Vec::new(), &mut paths, &mut hosts, team_key, project_key, root, &mut warnings);
 
     let content = openapi_doc(&settings.name, paths, &hosts, want_yaml)?;
     Ok(ExportOutcome { content, warnings })
 }
 
+/// 把接口树展平为 (分组路径, 接口键) 列表
+fn flatten_ifaces(nodes: &[domain::TreeNode], base: Vec<String>, out: &mut Vec<(Vec<String>, String)>) {
+    for node in nodes {
+        match node {
+            domain::TreeNode::Group { key, children, .. } => {
+                let mut p = base.clone();
+                p.push(key.clone());
+                flatten_ifaces(children, p, out);
+            }
+            domain::TreeNode::Interface { key, .. } => {
+                out.push((base.clone(), key.clone()));
+            }
+        }
+    }
+}
+
 /// 把单个接口导出为一个 OpenAPI 3.0 文档（仅一条路径）
-pub fn export_openapi_interface(
-    root: &Path,
+pub async fn export_openapi_interface(
+    db: &DatabaseConnection,
     team_key: &str,
     project_key: &str,
     group_path: &[String],
     iface_key: &str,
     want_yaml: bool,
 ) -> Result<ExportOutcome, String> {
-    let settings = crate::storage::get_project_settings(root, team_key, project_key)?;
-    let iface = storage::get_interface(root, team_key, project_key, group_path, iface_key)
+    let settings = crate::db::repo::get_project_settings(db, team_key, project_key).await?;
+    let iface = crate::db::repo::get_interface(db, team_key, project_key, group_path, iface_key)
+        .await
         .map_err(|e| format!("读取接口 {iface_key} 失败：{e}"))?;
     let mut warnings = Vec::new();
     let (method, path_str, operation, host) = build_interface_operation(&iface, project_key, iface_key, &mut warnings);
@@ -832,7 +837,7 @@ pub fn export_openapi_interface(
 
 /// 单个接口 → (小写方法, 路径, OpenAPI operation, host)
 fn build_interface_operation(
-    iface: &crate::storage::InterfaceFile,
+    iface: &crate::domain::InterfaceFile,
     proj: &str,
     key: &str,
     warnings: &mut Vec<String>,
@@ -962,14 +967,14 @@ fn schema_type_of(t: &str) -> &str {
 }
 
 /// 结构树 → OpenAPI JSON Schema
-fn schema_of_json_body(json: &storage::JsonBody) -> Value {
+fn schema_of_json_body(json: &domain::JsonBody) -> Value {
     if json.root.field_type.is_empty() {
         return json!({});
     }
     schema_of_field(&json.root).unwrap_or(json!({}))
 }
 
-fn schema_of_field(f: &storage::BodyField) -> Option<Value> {
+fn schema_of_field(f: &domain::BodyField) -> Option<Value> {
     let mut node = match f.field_type.as_str() {
         "object" => {
             let mut props = serde_json::Map::new();
@@ -1107,13 +1112,11 @@ mod tests {
         assert_eq!(v[0]["ok"], true);
     }
 
-    #[test]
-    fn import_names_files_by_display_name() {
-        let root = std::env::temp_dir().join(format!("apidock-imp-name-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        std::fs::create_dir_all(&root).unwrap();
-        storage::ensure_root(&root).unwrap();
-        storage::create_team(&root, "ops", "运维").unwrap();
-        storage::create_project(&root, "ops", "默认模块", "默认模块").unwrap();
+    #[tokio::test]
+    async fn import_names_files_by_display_name() {
+        let db = crate::db::tests_support::temp_db("imp-name").await;
+        crate::db::repo::create_team(&db, "ops", "运维").await.unwrap();
+        crate::db::repo::create_project(&db, "ops", "默认模块", "默认模块").await.unwrap();
         let spec = r#"{
   "openapi": "3.0.3",
   "info": { "title": "默认模块", "version": "1.0" },
@@ -1128,28 +1131,23 @@ mod tests {
   }
 }"#;
         let (_, list) = parse_openapi(spec, false).unwrap();
-        let report = import_into_project(&root, "ops", "默认模块", &list).unwrap();
+        let report = import_into_project(&db, "ops", "默认模块", &list).await.unwrap();
         assert_eq!(report.total, 1);
-        // 文件名 = 名称（中文）
-        let path = crate::storage::interface_file(&root, "ops", "默认模块", &[], "数据下发V2");
-        assert!(path.exists(), "期望文件 {} 存在", path.display());
-        let f = storage::get_interface(&root, "ops", "默认模块", &[], "数据下发V2").unwrap();
+        // 接口键 = 名称（中文）
+        let f = crate::db::repo::get_interface(&db, "ops", "默认模块", &[], "数据下发V2").await.unwrap();
         assert_eq!(f.name, "数据下发V2");
         // 请求体为示例值而非 schema
         let v: Value = serde_json::from_str(&f.body.content).unwrap();
         assert_eq!(v[0]["command_type"], "");
         assert_eq!(v[0]["count"], 0);
         assert!(v[0].as_object().unwrap().contains_key("payload"));
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
-    #[test]
-    fn import_renames_duplicate_names_in_same_dir() {
-        let root = std::env::temp_dir().join(format!("apidock-imp-dup-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        std::fs::create_dir_all(&root).unwrap();
-        storage::ensure_root(&root).unwrap();
-        storage::create_team(&root, "ops", "运维").unwrap();
-        storage::create_project(&root, "ops", "p", "P").unwrap();
+    #[tokio::test]
+    async fn import_renames_duplicate_names_in_same_dir() {
+        let db = crate::db::tests_support::temp_db("imp-dup").await;
+        crate::db::repo::create_team(&db, "ops", "运维").await.unwrap();
+        crate::db::repo::create_project(&db, "ops", "p", "P").await.unwrap();
         let spec = r#"{
   "openapi": "3.0.3",
   "info": { "title": "t", "version": "1" },
@@ -1159,12 +1157,19 @@ mod tests {
   }
 }"#;
         let (_, list) = parse_openapi(spec, false).unwrap();
-        let report = import_into_project(&root, "ops", "p", &list).unwrap();
+        let report = import_into_project(&db, "ops", "p", &list).await.unwrap();
         assert_eq!(report.total, 2);
         assert!(report.warnings.iter().any(|w| w.contains("同名词条")));
-        assert!(crate::storage::interface_file(&root, "ops", "p", &[], "同名词条").exists());
-        assert!(crate::storage::interface_file(&root, "ops", "p", &[], "同名词条-2").exists());
-        std::fs::remove_dir_all(&root).unwrap();
+        let keys: Vec<String> = crate::db::repo::list_interface_tree(&db, "ops", "p")
+            .await
+            .iter()
+            .filter_map(|n| match n {
+                domain::TreeNode::Interface { key, .. } => Some(key.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(keys.iter().any(|k| k == "同名词条"));
+        assert!(keys.iter().any(|k| k == "同名词条-2"));
     }
 
     #[test]
@@ -1187,27 +1192,23 @@ mod tests {
         assert_eq!(create.query[0].key, "x");
     }
 
-    #[test]
-    fn openapi_export_roundtrip() {
-        let root = std::env::temp_dir().join(format!("apidock-exp-test-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        storage::ensure_root(&root).unwrap();
-        storage::create_team(&root, "ops", "运维").unwrap();
-        storage::create_project(&root, "ops", "p", "导出项目").unwrap();
-        storage::create_interface(&root, "ops", "p", &[], "get-users", "用户列表").unwrap();
-        let mut f = storage::InterfaceFile::new("get-users");
+    #[tokio::test]
+    async fn openapi_export_roundtrip() {
+        let db = crate::db::tests_support::temp_db("exp").await;
+        crate::db::repo::create_team(&db, "ops", "运维").await.unwrap();
+        crate::db::repo::create_project(&db, "ops", "p", "导出项目").await.unwrap();
+        crate::db::repo::create_interface(&db, "ops", "p", &[], "get-users", "用户列表").await.unwrap();
+        let mut f = domain::InterfaceFile::new("get-users");
         f.url = "https://api.example.com/v1/users".into();
         f.method = "GET".into();
-        storage::save_interface(&root, "ops", "p", &[], "get-users", &f).unwrap();
+        crate::db::repo::save_interface(&db, "ops", "p", &[], "get-users", &f).await.unwrap();
 
-        let out = export_openapi(&root, "ops", "p", false).unwrap();
+        let out = export_openapi(&db, "ops", "p", false).await.unwrap();
         let v: Value = serde_json::from_str(&out.content).unwrap();
         assert_eq!(v["paths"]["/v1/users"]["get"]["operationId"].as_str().unwrap(), "p-get-users");
 
         let (_, list) = parse_openapi(&out.content, false).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].url, "https://api.example.com/v1/users");
-
-        std::fs::remove_dir_all(&root).unwrap();
     }
 }

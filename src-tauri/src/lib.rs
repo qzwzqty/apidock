@@ -1,33 +1,35 @@
 mod assertions;
+mod db;
+mod domain;
 mod http;
 mod imports;
+mod legacy;
 mod runner;
-mod storage;
 mod variables;
 
+use db::repo;
+use domain::{
+    EnvironmentFile, InterfaceFile, ProjectInfo, ProjectSettings, TeamInfo, TreeNode,
+    WorkspaceState,
+};
+use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
-use tauri::{Emitter, Manager, State};
-use notify::Watcher;
-
-use storage::{EnvironmentFile, InterfaceFile, ProjectInfo, ProjectSettings, TeamInfo, TreeNode, WorkspaceState};
-
-type WatchSender = std::sync::mpsc::Sender<notify::Result<notify::Event>>;
-static WATCHER_TX: OnceLock<WatchSender> = OnceLock::new();
+use std::sync::{Arc, Mutex};
+use tauri::State;
 
 pub struct AppState {
     root: Mutex<Option<PathBuf>>,
-    watcher: Mutex<Option<notify::RecommendedWatcher>>,
-    cookiejar: std::sync::Arc<reqwest::cookie::Jar>,
+    db: Mutex<Option<DatabaseConnection>>,
+    cookiejar: Arc<reqwest::cookie::Jar>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
             root: Mutex::new(None),
-            watcher: Mutex::new(None),
-            cookiejar: std::sync::Arc::new(reqwest::cookie::Jar::default()),
+            db: Mutex::new(None),
+            cookiejar: Arc::new(reqwest::cookie::Jar::default()),
         }
     }
 }
@@ -41,134 +43,215 @@ pub struct AppSession {
     pub workspace: WorkspaceState,
 }
 
+// ----- 会话 / 数据根 -----
+
 #[tauri::command]
-fn get_session(state: State<'_, AppState>) -> Result<AppSession, String> {
-    let root = restore_root(&state);
-    build_session(root.as_deref())
+async fn get_session(state: State<'_, AppState>) -> Result<AppSession, String> {
+    ensure_open(&state).await?;
+    build_session(&state).await
 }
 
 #[tauri::command]
-fn set_data_root(state: State<'_, AppState>, path: String) -> Result<AppSession, String> {
+async fn set_data_root(state: State<'_, AppState>, path: String) -> Result<AppSession, String> {
     let root = PathBuf::from(path);
-    storage::ensure_root(&root).map_err(|e| e.to_string())?;
-    persist_root(&state, &root)?;
+    let db = db::open(&root).await?;
+    persist_root(&root)?;
     {
-        let mut guard = state.root.lock().unwrap();
-        *guard = Some(root.clone());
+        *state.root.lock().unwrap() = Some(root);
+        *state.db.lock().unwrap() = Some(db);
     }
-    restart_watcher(&state, &root)?;
-    build_session(Some(&root))
+    build_session(&state).await
 }
 
 #[tauri::command]
-fn get_data_root(state: tauri::State<'_, AppState>) -> Option<String> {
-    restore_root(&state).map(|p| p.to_string_lossy().into_owned())
+fn get_data_root(state: State<'_, AppState>) -> Option<String> {
+    state
+        .root
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// 若数据库未打开则尝试从上次记录的数据根恢复
+async fn ensure_open(state: &AppState) -> Result<(), String> {
+    let already = state.db.lock().unwrap().is_some();
+    if already {
+        return Ok(());
+    }
+    let Some(root) = restore_root_path() else {
+        return Ok(());
+    };
+    let db = db::open(&root).await?;
+    *state.root.lock().unwrap() = Some(root);
+    *state.db.lock().unwrap() = Some(db);
+    Ok(())
+}
+
+fn with_db(state: &AppState) -> Result<DatabaseConnection, String> {
+    state
+        .db
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "尚未选择数据根目录".to_string())
+}
+
+async fn build_session(state: &AppState) -> Result<AppSession, String> {
+    let (root, db) = (
+        state.root.lock().unwrap().clone(),
+        state.db.lock().unwrap().clone(),
+    );
+    match (root, db) {
+        (Some(r), Some(db)) => Ok(AppSession {
+            data_root: Some(r.to_string_lossy().into_owned()),
+            teams: repo::list_teams(&db).await,
+            workspace: repo::get_workspace(&db).await,
+        }),
+        _ => Ok(AppSession {
+            data_root: None,
+            teams: Vec::new(),
+            workspace: WorkspaceState::new(),
+        }),
+    }
+}
+
+fn restore_root_path() -> Option<PathBuf> {
+    let text = std::fs::read_to_string(recent_root_path_file()).ok()?;
+    let buf = PathBuf::from(text.trim());
+    buf.is_dir().then_some(buf)
+}
+
+fn recent_root_path_file() -> PathBuf {
+    let dir = std::env::var("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("apidock");
+    dir.join("recent-data-root.txt")
+}
+
+fn persist_root(root: &PathBuf) -> Result<(), String> {
+    let file = recent_root_path_file();
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&file, root.to_string_lossy().as_ref()).map_err(|e| e.to_string())
+}
+
+// ----- 团队 / 项目 -----
+
+#[tauri::command]
+async fn list_teams(state: State<'_, AppState>) -> Result<Vec<TeamInfo>, String> {
+    let db = with_db(&state)?;
+    Ok(repo::list_teams(&db).await)
 }
 
 #[tauri::command]
-fn list_teams(state: tauri::State<'_, AppState>) -> Result<Vec<TeamInfo>, String> {
-    let root = with_root(&state)?;
-    Ok(storage::list_teams(&root))
-}
-
-#[tauri::command]
-fn list_projects<'r>(
-    state: tauri::State<'r, AppState>,
+async fn list_projects(
+    state: State<'_, AppState>,
     team_key: String,
 ) -> Result<Vec<ProjectInfo>, String> {
-    let root = with_root(&state)?;
-    Ok(storage::list_projects(&root, &team_key))
+    let db = with_db(&state)?;
+    Ok(repo::list_projects(&db, &team_key).await)
 }
 
 #[tauri::command]
-fn create_team(
+async fn create_team(
     state: State<'_, AppState>,
     name: String,
     description: Option<String>,
 ) -> Result<TeamInfo, String> {
-    let root = with_root(&state)?;
-    // 目录名 = 用户输入名（只校验特殊字符）
-    let name = storage::validate_name(&name)?;
-    if storage::list_teams(&root).iter().any(|t| t.key == name) {
+    let db = with_db(&state)?;
+    let name = domain::validate_name(&name)?;
+    if repo::list_teams(&db).await.iter().any(|t| t.key == name) {
         return Err("已存在同名团队".into());
     }
-    let team = storage::create_team(&root, &name, &name)?;
+    let team = repo::create_team(&db, &name, &name).await?;
     if let Some(desc) = description {
         if !desc.trim().is_empty() {
-            storage::set_team_description(&root, &name, desc.trim())?;
+            repo::set_team_description(&db, &name, desc.trim()).await?;
         }
     }
     Ok(team)
 }
 
 #[tauri::command]
-fn create_project(
+async fn create_project(
     state: State<'_, AppState>,
     team_key: String,
     name: String,
     description: Option<String>,
 ) -> Result<ProjectInfo, String> {
-    let root = with_root(&state)?;
-    let name = storage::validate_name(&name)?;
-    if storage::list_projects(&root, &team_key).iter().any(|p| p.key == name) {
+    let db = with_db(&state)?;
+    let name = domain::validate_name(&name)?;
+    if repo::list_projects(&db, &team_key)
+        .await
+        .iter()
+        .any(|p| p.key == name)
+    {
         return Err("已存在同名项目".into());
     }
-    let project = storage::create_project(&root, &team_key, &name, &name)?;
+    let project = repo::create_project(&db, &team_key, &name, &name).await?;
     if let Some(desc) = description {
         if !desc.trim().is_empty() {
-            storage::set_project_description(&root, &team_key, &name, desc.trim())?;
+            repo::set_project_description(&db, &team_key, &name, desc.trim()).await?;
         }
     }
     Ok(project)
 }
 
 #[tauri::command]
-fn delete_team(state: tauri::State<'_, AppState>, team_key: String) -> Result<(), String> {
-    let root = with_root(&state)?;
-    storage::delete_team(&root, &team_key)
+async fn delete_team(state: State<'_, AppState>, team_key: String) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::delete_team(&db, &team_key).await
 }
 
 #[tauri::command]
-fn delete_project(
+async fn delete_project(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
 ) -> Result<(), String> {
-    let root = with_root(&state)?;
-    storage::delete_project(&root, &team_key, &project_key)
+    let db = with_db(&state)?;
+    repo::delete_project(&db, &team_key, &project_key).await
 }
 
 #[tauri::command]
-fn rename_team(
+async fn rename_team(
     state: State<'_, AppState>,
     team_key: String,
     new_name: String,
 ) -> Result<(), String> {
-    let root = with_root(&state)?;
-    let new_name = storage::validate_name(&new_name)?;
-    if new_name != team_key && storage::list_teams(&root).iter().any(|t| t.key == new_name) {
+    let db = with_db(&state)?;
+    let new_name = domain::validate_name(&new_name)?;
+    if new_name != team_key && repo::list_teams(&db).await.iter().any(|t| t.key == new_name) {
         return Err("已存在同名团队".into());
     }
-    storage::rename_team(&root, &team_key, &new_name)
+    repo::rename_team(&db, &team_key, &new_name).await
 }
 
 #[tauri::command]
-fn rename_project(
+async fn rename_project(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
     new_name: String,
 ) -> Result<(), String> {
-    let root = with_root(&state)?;
-    let new_name = storage::validate_name(&new_name)?;
-    if new_name != project_key && storage::list_projects(&root, &team_key).iter().any(|p| p.key == new_name) {
+    let db = with_db(&state)?;
+    let new_name = domain::validate_name(&new_name)?;
+    if new_name != project_key
+        && repo::list_projects(&db, &team_key)
+            .await
+            .iter()
+            .any(|p| p.key == new_name)
+    {
         return Err("已存在同名项目".into());
     }
-    storage::rename_project(&root, &team_key, &project_key, &new_name)
+    repo::rename_project(&db, &team_key, &project_key, &new_name).await
 }
 
 #[tauri::command]
-fn move_interface(
+async fn move_interface(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
@@ -176,41 +259,49 @@ fn move_interface(
     iface_key: String,
     target_group_path: Vec<String>,
 ) -> Result<String, String> {
-    let root = with_root(&state)?;
-    storage::move_interface(&root, &team_key, &project_key, &group_path, &iface_key, &target_group_path)
+    let db = with_db(&state)?;
+    repo::move_interface(
+        &db,
+        &team_key,
+        &project_key,
+        &group_path,
+        &iface_key,
+        &target_group_path,
+    )
+    .await
 }
 
 #[tauri::command]
-fn move_group(
+async fn move_group(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
     group_path: Vec<String>,
     target_group_path: Vec<String>,
 ) -> Result<(), String> {
-    let root = with_root(&state)?;
-    storage::move_group(&root, &team_key, &project_key, &group_path, &target_group_path)
+    let db = with_db(&state)?;
+    repo::move_group(&db, &team_key, &project_key, &group_path, &target_group_path).await
 }
 
 #[tauri::command]
-fn save_workspace(
+async fn save_workspace(
     state: State<'_, AppState>,
     workspace: WorkspaceState,
 ) -> Result<(), String> {
-    let root = with_root(&state)?;
-    storage::write_workspace(&root, &workspace).map_err(|e| e.to_string())
+    let db = with_db(&state)?;
+    repo::save_workspace(&db, &workspace).await
 }
 
 // ----- 接口 / 分组树 -----
 
 #[tauri::command]
-fn list_interface_tree(
+async fn list_interface_tree(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
 ) -> Result<Vec<TreeNode>, String> {
-    let root = with_root(&state)?;
-    Ok(storage::list_interface_tree(&root, &team_key, &project_key))
+    let db = with_db(&state)?;
+    Ok(repo::list_interface_tree(&db, &team_key, &project_key).await)
 }
 
 /// 取接口树下某分组路径下的直接子节点键（含分组键与接口键）
@@ -234,7 +325,7 @@ fn dir_keys(nodes: &[TreeNode], at: &[String]) -> Vec<String> {
 }
 
 #[tauri::command]
-fn create_group(
+async fn create_group(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
@@ -242,47 +333,56 @@ fn create_group(
     name: String,
     description: Option<String>,
 ) -> Result<(), String> {
-    let root = with_root(&state)?;
-    let name = storage::validate_name(&name)?;
-    let keys = dir_keys(&storage::list_interface_tree(&root, &team_key, &project_key), &group_path);
+    let db = with_db(&state)?;
+    let name = domain::validate_name(&name)?;
+    let keys = dir_keys(
+        &repo::list_interface_tree(&db, &team_key, &project_key).await,
+        &group_path,
+    );
     if keys.contains(&name) {
         return Err("已存在同名分组/接口".into());
     }
-    storage::create_group(&root, &team_key, &project_key, &group_path, &name, &name)?;
+    repo::create_group(&db, &team_key, &project_key, &group_path, &name, &name).await?;
     if let Some(desc) = description {
         if !desc.trim().is_empty() {
-            storage::set_group_description(&root, &team_key, &project_key, &group_path, desc.trim())?;
+            repo::set_group_description(&db, &team_key, &project_key, &group_path, desc.trim())
+                .await?;
         }
     }
     Ok(())
 }
 
 #[tauri::command]
-fn rename_group(
+async fn rename_group(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
     group_path: Vec<String>,
     new_name: String,
 ) -> Result<(), String> {
-    let root = with_root(&state)?;
-    let new_name = storage::validate_name(&new_name)?;
-    let keys = dir_keys(&storage::list_interface_tree(&root, &team_key, &project_key), &group_path[..group_path.len().saturating_sub(1)]);
-    if keys.iter().any(|k| k == &new_name && k != group_path.last().map(String::as_str).unwrap_or_default()) {
+    let db = with_db(&state)?;
+    let new_name = domain::validate_name(&new_name)?;
+    let keys = dir_keys(
+        &repo::list_interface_tree(&db, &team_key, &project_key).await,
+        &group_path[..group_path.len().saturating_sub(1)],
+    );
+    if keys.iter().any(|k| {
+        k == &new_name && k != group_path.last().map(String::as_str).unwrap_or_default()
+    }) {
         return Err("已存在同名分组/接口".into());
     }
-    storage::rename_group(&root, &team_key, &project_key, &group_path, &new_name)
+    repo::rename_group(&db, &team_key, &project_key, &group_path, &new_name).await
 }
 
 #[tauri::command]
-fn delete_group(
+async fn delete_group(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
     group_path: Vec<String>,
 ) -> Result<(), String> {
-    let root = with_root(&state)?;
-    storage::delete_group(&root, &team_key, &project_key, &group_path)
+    let db = with_db(&state)?;
+    repo::delete_group(&db, &team_key, &project_key, &group_path).await
 }
 
 #[derive(Debug, Serialize)]
@@ -293,7 +393,7 @@ struct CreatedInterface {
 }
 
 #[tauri::command]
-fn create_interface(
+async fn create_interface(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
@@ -301,17 +401,21 @@ fn create_interface(
     name: String,
     description: Option<String>,
 ) -> Result<CreatedInterface, String> {
-    let root = with_root(&state)?;
-    let name = storage::validate_name(&name)?;
-    let keys = dir_keys(&storage::list_interface_tree(&root, &team_key, &project_key), &group_path);
+    let db = with_db(&state)?;
+    let name = domain::validate_name(&name)?;
+    let keys = dir_keys(
+        &repo::list_interface_tree(&db, &team_key, &project_key).await,
+        &group_path,
+    );
     if keys.contains(&name) {
         return Err("已存在同名分组/接口".into());
     }
-    let mut iface = storage::create_interface(&root, &team_key, &project_key, &group_path, &name, &name)?;
+    let mut iface =
+        repo::create_interface(&db, &team_key, &project_key, &group_path, &name, &name).await?;
     if let Some(desc) = description {
         if !desc.trim().is_empty() {
             iface.description = desc.trim().to_string();
-            storage::save_interface(&root, &team_key, &project_key, &group_path, &name, &iface)?;
+            repo::save_interface(&db, &team_key, &project_key, &group_path, &name, &iface).await?;
         }
     }
     Ok(CreatedInterface { key: name, file: iface })
@@ -319,22 +423,26 @@ fn create_interface(
 
 /// 复制接口到同分组：内容完全一致，名称 = 原名后接 -copy（已存在则 -copy-2 / -copy-3 …），新 id
 #[tauri::command]
-fn copy_interface(
+async fn copy_interface(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
     group_path: Vec<String>,
     iface_key: String,
 ) -> Result<CreatedInterface, String> {
-    let root = with_root(&state)?;
-    let src = storage::get_interface(&root, &team_key, &project_key, &group_path, &iface_key)?;
-    let keys = dir_keys(&storage::list_interface_tree(&root, &team_key, &project_key), &group_path);
+    let db = with_db(&state)?;
+    let src = repo::get_interface(&db, &team_key, &project_key, &group_path, &iface_key).await?;
+    let keys = dir_keys(
+        &repo::list_interface_tree(&db, &team_key, &project_key).await,
+        &group_path,
+    );
     let key = unique_copy_key(&iface_key, &keys);
-    let created = storage::create_interface(&root, &team_key, &project_key, &group_path, &key, &key)?;
+    let created =
+        repo::create_interface(&db, &team_key, &project_key, &group_path, &key, &key).await?;
     let mut doc = src;
     doc.id = created.id;
     doc.name = created.name;
-    storage::save_interface(&root, &team_key, &project_key, &group_path, &key, &doc)?;
+    repo::save_interface(&db, &team_key, &project_key, &group_path, &key, &doc).await?;
     Ok(CreatedInterface { key, file: doc })
 }
 
@@ -361,19 +469,19 @@ fn unique_copy_key(iface_key: &str, keys: &[String]) -> String {
 }
 
 #[tauri::command]
-fn get_interface(
+async fn get_interface(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
     group_path: Vec<String>,
     iface_key: String,
 ) -> Result<InterfaceFile, String> {
-    let root = with_root(&state)?;
-    storage::get_interface(&root, &team_key, &project_key, &group_path, &iface_key)
+    let db = with_db(&state)?;
+    repo::get_interface(&db, &team_key, &project_key, &group_path, &iface_key).await
 }
 
 #[tauri::command]
-fn save_interface(
+async fn save_interface(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
@@ -381,12 +489,12 @@ fn save_interface(
     iface_key: String,
     iface: InterfaceFile,
 ) -> Result<(), String> {
-    let root = with_root(&state)?;
-    storage::save_interface(&root, &team_key, &project_key, &group_path, &iface_key, &iface)
+    let db = with_db(&state)?;
+    repo::save_interface(&db, &team_key, &project_key, &group_path, &iface_key, &iface).await
 }
 
 #[tauri::command]
-fn rename_interface(
+async fn rename_interface(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
@@ -394,105 +502,109 @@ fn rename_interface(
     iface_key: String,
     new_name: String,
 ) -> Result<String, String> {
-    let root = with_root(&state)?;
-    let new_name = storage::validate_name(&new_name)?;
+    let db = with_db(&state)?;
+    let new_name = domain::validate_name(&new_name)?;
     if new_name != iface_key {
-        let keys = dir_keys(&storage::list_interface_tree(&root, &team_key, &project_key), &group_path);
+        let keys = dir_keys(
+            &repo::list_interface_tree(&db, &team_key, &project_key).await,
+            &group_path,
+        );
         if keys.iter().any(|k| k == &new_name) {
             return Err("已存在同名分组/接口".into());
         }
     }
-    storage::rename_interface(&root, &team_key, &project_key, &group_path, &iface_key, &new_name)?;
+    repo::rename_interface(&db, &team_key, &project_key, &group_path, &iface_key, &new_name)
+        .await?;
     Ok(new_name)
 }
 
 #[tauri::command]
-fn delete_interface(
+async fn delete_interface(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
     group_path: Vec<String>,
     iface_key: String,
 ) -> Result<(), String> {
-    let root = with_root(&state)?;
-    storage::delete_interface(&root, &team_key, &project_key, &group_path, &iface_key)
+    let db = with_db(&state)?;
+    repo::delete_interface(&db, &team_key, &project_key, &group_path, &iface_key).await
 }
 
 // ----- 环境 / 项目设置 -----
 
 #[tauri::command]
-fn list_environments(
+async fn list_environments(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
-) -> Result<Vec<storage::EnvironmentSummary>, String> {
-    let root = with_root(&state)?;
-    Ok(storage::list_environments(&root, &team_key, &project_key))
+) -> Result<Vec<domain::EnvironmentSummary>, String> {
+    let db = with_db(&state)?;
+    Ok(repo::list_environments(&db, &team_key, &project_key).await)
 }
 
 #[tauri::command]
-fn get_environment(
+async fn get_environment(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
     env_id: String,
 ) -> Result<EnvironmentFile, String> {
-    let root = with_root(&state)?;
-    storage::get_environment(&root, &team_key, &project_key, &env_id)
+    let db = with_db(&state)?;
+    repo::get_environment(&db, &team_key, &project_key, &env_id).await
 }
 
 #[tauri::command]
-fn save_environment(
+async fn save_environment(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
     env: EnvironmentFile,
 ) -> Result<(), String> {
-    let root = with_root(&state)?;
-    storage::save_environment(&root, &team_key, &project_key, env)
+    let db = with_db(&state)?;
+    repo::save_environment(&db, &team_key, &project_key, env).await
 }
 
 #[tauri::command]
-fn delete_environment(
+async fn delete_environment(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
     env_id: String,
 ) -> Result<(), String> {
-    let root = with_root(&state)?;
-    storage::delete_environment(&root, &team_key, &project_key, &env_id)
+    let db = with_db(&state)?;
+    repo::delete_environment(&db, &team_key, &project_key, &env_id).await
 }
 
 #[tauri::command]
-fn set_active_environment(
+async fn set_active_environment(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
     env_id: String,
 ) -> Result<(), String> {
-    let root = with_root(&state)?;
-    storage::set_active_environment(&root, &team_key, &project_key, &env_id)
+    let db = with_db(&state)?;
+    repo::set_active_environment(&db, &team_key, &project_key, &env_id).await
 }
 
 #[tauri::command]
-fn get_project_settings(
+async fn get_project_settings(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
 ) -> Result<ProjectSettings, String> {
-    let root = with_root(&state)?;
-    storage::get_project_settings(&root, &team_key, &project_key)
+    let db = with_db(&state)?;
+    repo::get_project_settings(&db, &team_key, &project_key).await
 }
 
 #[tauri::command]
-fn save_project_settings(
+async fn save_project_settings(
     state: State<'_, AppState>,
     team_key: String,
     project_key: String,
     settings: ProjectSettings,
 ) -> Result<(), String> {
-    let root = with_root(&state)?;
-    storage::save_project_settings(&root, &team_key, &project_key, settings)
+    let db = with_db(&state)?;
+    repo::save_project_settings(&db, &team_key, &project_key, settings).await
 }
 
 // ----- 发送请求 -----
@@ -505,27 +617,25 @@ async fn send_request(
     env_id: String,
     iface: InterfaceFile,
 ) -> Result<http::SendResponse, http::SendErrorInfo> {
-    let root = {
-        let guard = state.root.lock().unwrap();
-        guard
-            .clone()
-            .ok_or_else(|| http::SendErrorInfo {
-                kind: "http".into(),
-                message: "尚未选择数据根目录".into(),
-            })?
-    };
-    let env = storage::get_environment(&root, &team_key, &project_key, &env_id).map_err(|e| {
-        http::SendErrorInfo { kind: "http".into(), message: e }
-    })?;
-    let settings = storage::get_project_settings(&root, &team_key, &project_key).map_err(|e| {
-        http::SendErrorInfo { kind: "http".into(), message: e }
-    })?;
+    let db = state
+        .db
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| http::SendErrorInfo {
+            kind: "http".into(),
+            message: "尚未选择数据根目录".into(),
+        })?;
+    let http_err = |message: String| http::SendErrorInfo { kind: "http".into(), message };
+    let env = repo::get_environment(&db, &team_key, &project_key, &env_id)
+        .await
+        .map_err(http_err)?;
+    let settings = repo::get_project_settings(&db, &team_key, &project_key)
+        .await
+        .map_err(http_err)?;
     let opts = http::SendOptions {
-        proxy: storage::read_workspace(&root).proxy,
-        cookie_jar: {
-            let jar = state.cookiejar.clone();
-            Some(jar)
-        },
+        proxy: repo::get_workspace(&db).await.proxy,
+        cookie_jar: Some(state.cookiejar.clone()),
         ..Default::default()
     };
     http::send(
@@ -545,11 +655,14 @@ async fn run_interfaces(
     project_key: String,
     group_path: Vec<String>,
 ) -> Result<runner::RunReport, String> {
-    let root = {
-        let guard = state.root.lock().unwrap();
-        guard.clone().ok_or("尚未选择数据根目录")?
-    };
-    runner::run_project(&root, &team_key, &project_key, Some(&group_path).filter(|g| !g.is_empty()).map(|x| x.as_slice())).await
+    let db = with_db(&state)?;
+    runner::run_project(
+        &db,
+        &team_key,
+        &project_key,
+        Some(&group_path).filter(|g| !g.is_empty()).map(|x| x.as_slice()),
+    )
+    .await
 }
 
 // ----- 导入 / 导出 -----
@@ -577,20 +690,14 @@ async fn import_spec_into_project(
     team_key: String,
     project_key: String,
 ) -> Result<(imports::ImportReport, String), String> {
-    let root = {
-        let guard = state.root.lock().unwrap();
-        guard.clone().ok_or("尚未选择数据根目录")?
-    };
+    let db = with_db(&state)?;
     let content = std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败：{e}"))?;
     let (kind, is_yaml) = detect_spec_kind(&content);
     let (name, ifaces) = match kind {
         "postman" => imports::parse_postman(&content)?,
         _ => imports::parse_openapi(&content, is_yaml)?,
     };
-    let (report, name) = match imports::import_into_project(&root, &team_key, &project_key, &ifaces) {
-        Ok(r) => (r, name),
-        Err(e) => return Err(e),
-    };
+    let report = imports::import_into_project(&db, &team_key, &project_key, &ifaces).await?;
     Ok((report, name))
 }
 
@@ -600,31 +707,32 @@ async fn import_spec_new_project(
     path: String,
     team_key: String,
 ) -> Result<(imports::ImportReport, String), String> {
-    let root = {
-        let guard = state.root.lock().unwrap();
-        guard.clone().ok_or("尚未选择数据根目录")?
-    };
+    let db = with_db(&state)?;
     let content = std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败：{e}"))?;
     let (kind, is_yaml) = detect_spec_kind(&content);
     let (name, ifaces) = match kind {
         "postman" => imports::parse_postman(&content)?,
         _ => imports::parse_openapi(&content, is_yaml)?,
     };
-    let project_key = match storage::validate_name(&name) {
+    let project_key = match domain::validate_name(&name) {
         Ok(k) => k,
         Err(_) => {
             let replaced: String = name
                 .trim()
                 .chars()
                 .map(|c| {
-                    if c <= '\u{1f}' || matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                    if c <= '\u{1f}'
+                        || matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+                    {
                         '-'
                     } else {
                         c
                     }
                 })
                 .collect();
-            let replaced = replaced.trim_end_matches(|c| c == '.' || c == '-' || c == ' ').to_string();
+            let replaced = replaced
+                .trim_end_matches(|c| c == '.' || c == '-' || c == ' ')
+                .to_string();
             if replaced.is_empty() {
                 format!("imported-{}", uuid::Uuid::new_v4())
             } else {
@@ -632,11 +740,15 @@ async fn import_spec_new_project(
             }
         }
     };
-    if storage::list_projects(&root, &team_key).iter().any(|p| p.key == project_key) {
+    if repo::list_projects(&db, &team_key)
+        .await
+        .iter()
+        .any(|p| p.key == project_key)
+    {
         return Err(format!("已存在同名项目 {project_key}，请改为导入到现有项目"));
     }
-    storage::create_project(&root, &team_key, &project_key, &name)?;
-    let report = imports::import_into_project(&root, &team_key, &project_key, &ifaces)?;
+    repo::create_project(&db, &team_key, &project_key, &name).await?;
+    let report = imports::import_into_project(&db, &team_key, &project_key, &ifaces).await?;
     Ok((report, name))
 }
 
@@ -648,11 +760,8 @@ async fn export_openapi_file(
     project_key: String,
     yaml: bool,
 ) -> Result<Vec<String>, String> {
-    let root = {
-        let guard = state.root.lock().unwrap();
-        guard.clone().ok_or("尚未选择数据根目录")?
-    };
-    let out = imports::export_openapi(&root, &team_key, &project_key, yaml)?;
+    let db = with_db(&state)?;
+    let out = imports::export_openapi(&db, &team_key, &project_key, yaml).await?;
     std::fs::write(&path, out.content).map_err(|e| format!("写入文件失败：{e}"))?;
     Ok(out.warnings)
 }
@@ -667,102 +776,22 @@ async fn export_interface_openapi_file(
     iface_key: String,
     yaml: bool,
 ) -> Result<Vec<String>, String> {
-    let root = {
-        let guard = state.root.lock().unwrap();
-        guard.clone().ok_or("尚未选择数据根目录")?
-    };
-    let out = imports::export_openapi_interface(&root, &team_key, &project_key, &group_path, &iface_key, yaml)?;
+    let db = with_db(&state)?;
+    let out = imports::export_openapi_interface(
+        &db,
+        &team_key,
+        &project_key,
+        &group_path,
+        &iface_key,
+        yaml,
+    )
+    .await?;
     std::fs::write(&path, out.content).map_err(|e| format!("写入文件失败：{e}"))?;
     Ok(out.warnings)
 }
 
-fn restart_watcher(state: &AppState, root: &PathBuf) -> Result<(), String> {
-    let mut guard = state.watcher.lock().unwrap();
-    *guard = Some(start_watcher(root)?);
-    Ok(())
-}
-
-fn start_watcher(root: &PathBuf) -> Result<notify::RecommendedWatcher, String> {
-    let sender = WATCHER_TX
-        .get()
-        .ok_or("watcher channel not ready")?
-        .clone();
-    let mut watcher = notify::recommended_watcher(move |res| {
-        let _ = sender.send(res);
-    })
-    .map_err(|e| e.to_string())?;
-    watcher
-        .watch(root, notify::RecursiveMode::Recursive)
-        .map_err(|e| e.to_string())?;
-    Ok(watcher)
-}
-
-fn build_session(root: Option<&std::path::Path>) -> Result<AppSession, String> {
-    let (data_root, teams, workspace) = match root {
-        Some(r) => (
-            Some(r.to_string_lossy().into_owned()),
-            storage::list_teams(r),
-            storage::read_workspace(r),
-        ),
-        None => (None, Vec::new(), WorkspaceState::new()),
-    };
-    Ok(AppSession { data_root, teams, workspace })
-}
-
-fn with_root(state: &AppState) -> Result<PathBuf, String> {
-    let guard = state.root.lock().unwrap();
-    guard
-        .as_deref()
-        .map(PathBuf::from)
-        .ok_or_else(|| "尚未选择数据根目录".to_string())
-}
-
-/// 取当前根目录；若为空则尝试从应用配置目录恢复上次选择
-fn restore_root(state: &AppState) -> Option<PathBuf> {
-    {
-        let mut guard = state.root.lock().unwrap();
-        if let Some(root) = guard.clone() {
-            if root.is_dir() {
-                return Some(root);
-            }
-        }
-        // 回落：从最近记录恢复
-        let recent = match std::fs::read_to_string(recent_root_path_file()) {
-            Ok(text) => {
-                let buf = PathBuf::from(text.trim());
-                buf.is_dir().then_some(buf)
-            }
-            Err(_) => None,
-        };
-        if let Some(path) = recent {
-            *guard = Some(path.clone());
-            return Some(path);
-        }
-        None
-    }
-}
-
-fn recent_root_path_file() -> PathBuf {
-    let dir = std::env::var("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("apidock");
-    dir.join("recent-data-root.txt")
-}
-
-fn persist_root(_state: &AppState, root: &PathBuf) -> Result<(), String> {
-    let file = recent_root_path_file();
-    if let Some(dir) = file.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&file, root.to_string_lossy().as_ref()).map_err(|e| e.to_string())
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let (tx, rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
-    let _ = WATCHER_TX.set(tx);
-
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -806,33 +835,6 @@ pub fn run() {
             export_openapi_file,
             export_interface_openapi_file,
         ])
-        .setup(move |app| {
-            // 文件变更去抖后 emit，供前端刷新
-            let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                let mut pending = false;
-                loop {
-                    match rx.recv_timeout(std::time::Duration::from_millis(300)) {
-                        Ok(Ok(_evt)) => pending = true,
-                        Ok(Err(_)) => {}
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                            if pending {
-                                let _ = handle.emit("fs://changed", ());
-                                pending = false;
-                            }
-                        }
-                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                    }
-                }
-            });
-
-            // 启动即恢复上次的数据根目录并开始文件监听
-            let state = app.state::<AppState>();
-            if let Some(root) = restore_root(&state) {
-                let _ = restart_watcher(&state, &root);
-            }
-            Ok(())
-        })
         .on_page_load(|webview, payload| {
             // 窗口初始为隐藏；首屏加载完成后再显示，避免启动白屏
             if payload.event() == tauri::webview::PageLoadEvent::Finished {

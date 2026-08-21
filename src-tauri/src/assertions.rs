@@ -1,4 +1,4 @@
-use crate::storage::Assertion;
+use crate::domain::Assertion;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -226,7 +226,7 @@ fn op_desc(op: &str) -> &'static str {
 pub fn check(
     status: u16,
     time_ms: u64,
-    headers: &[crate::storage::KeyValue],
+    headers: &[crate::domain::KeyValue],
     body: &str,
     assertions: &[Assertion],
 ) -> Vec<AssertionResult> {
@@ -304,10 +304,10 @@ fn trunc(s: &String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::Assertion;
+    use crate::domain::Assertion;
 
-    fn kv(key: &str, value: &str) -> crate::storage::KeyValue {
-        crate::storage::KeyValue { key: key.into(), value: value.into(), enabled: true }
+    fn kv(key: &str, value: &str) -> crate::domain::KeyValue {
+        crate::domain::KeyValue { key: key.into(), value: value.into(), enabled: true }
     }
 
     #[test]

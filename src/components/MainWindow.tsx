@@ -1,5 +1,4 @@
-import { useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useState } from "react";
 import { Search, Plus, Folder, Trash2, Users, Pencil } from "lucide-react";
 import type { TeamInfo, ProjectInfo } from "@/lib/api";
 import { useWorkspace } from "@/lib/workspace";
@@ -30,19 +29,6 @@ export function MainWindow() {
   const [renameTeamTarget, setRenameTeamTarget] = useState<TeamInfo | null>(null);
   const [renameProjTarget, setRenameProjTarget] = useState<ProjectInfo | null>(null);
 
-  // 外部变更自动刷新团队/项目
-  useEffect(() => {
-    let disposed = false;
-    const p = listen<string>("fs://changed", () => {
-      if (disposed) return;
-      void useWorkspace.getState().loadTeamsAndProjects();
-    });
-    return () => {
-      disposed = true;
-      void p.then((f) => f());
-    };
-  }, []);
-
   if (!dataRoot) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4">
@@ -50,7 +36,7 @@ export function MainWindow() {
         <p className="text-muted-foreground">纯离线的 API 管理工具</p>
         <Button onClick={pickDataRoot}>选择数据根目录</Button>
         <p className="text-xs text-muted-foreground">
-          选择或新建一个空文件夹作为数据根目录，所有数据将以文件形式保存在其中
+          选择或新建一个空文件夹作为数据根目录，所有数据将保存在其中的 apidock.db 数据库中
         </p>
       </div>
     );
@@ -215,7 +201,7 @@ export function MainWindow() {
         <CreateDialog
           open
           title="重命名团队"
-          nameLabel="团队名（将作为目录名）"
+          nameLabel="团队名（同时作为唯一键）"
           mode="rename"
           extraName={renameTeamTarget.name}
           confirmText="重命名"
@@ -230,7 +216,7 @@ export function MainWindow() {
         <CreateDialog
           open
           title="重命名项目"
-          nameLabel="项目名（将作为目录名）"
+          nameLabel="项目名（同时作为唯一键）"
           mode="rename"
           extraName={renameProjTarget.name}
           confirmText="重命名"
@@ -360,7 +346,7 @@ function CreateDialog({
             />
           </div>
         ) : (
-          <p className="text-[11px] text-muted-foreground">目录名将直接使用此名称，禁止包含 \ / : * ? " &lt; &gt; | 等特殊字符。</p>
+          <p className="text-[11px] text-muted-foreground">名称将同时作为唯一键，禁止包含 \ / : * ? " &lt; &gt; | 等特殊字符。</p>
         )}
         {err && <p className="text-xs text-red-400">{err}</p>}
         <DialogFooter>

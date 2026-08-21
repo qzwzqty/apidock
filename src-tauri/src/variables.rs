@@ -1,4 +1,4 @@
-use crate::storage::{EnvironmentFile, InterfaceFile, KeyValue};
+use crate::domain::{EnvironmentFile, InterfaceFile, KeyValue};
 use std::collections::BTreeMap;
 
 /// 变量收集，优先级：接口级 > 项目全局 > 环境（host 取自环境，可被覆盖）
@@ -100,7 +100,7 @@ pub fn enabled_pairs(list: &[KeyValue], vars: &BTreeMap<String, String>) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{EnvironmentFile, InterfaceFile};
+    use crate::domain::{EnvironmentFile, InterfaceFile};
 
     fn kv(key: &str, value: &str) -> KeyValue {
         KeyValue { key: key.into(), value: value.into(), enabled: true }

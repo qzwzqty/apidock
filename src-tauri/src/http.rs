@@ -1,4 +1,4 @@
-use crate::storage::{EnvironmentFile, GlobalParams, InterfaceFile, KeyValue, ProxyConfig};
+use crate::domain::{EnvironmentFile, GlobalParams, InterfaceFile, KeyValue, ProxyConfig};
 use crate::variables;
 use serde::Serialize;
 use std::time::{Duration, Instant};
@@ -385,7 +385,7 @@ pub async fn send(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{Body, EnvironmentFile, InterfaceFile};
+    use crate::domain::{Body, EnvironmentFile, InterfaceFile};
 
     /// 起一个一次性 HTTP 服务器线程，捕获首包请求并返回固定响应
     fn serve(
@@ -428,9 +428,9 @@ mod tests {
         let mut iface: InterfaceFile = InterfaceFile::new("t");
         iface.method = "POST".into();
         iface.url = format!("http://{addr}/api/{{{{tok}}}}");
-        iface.headers = vec![crate::storage::ApiParam { key: "X-Token".into(), example: "{{tok}}".into(), enabled: true, ..Default::default() }];
+        iface.headers = vec![crate::domain::ApiParam { key: "X-Token".into(), example: "{{tok}}".into(), enabled: true, ..Default::default() }];
         iface.body = Body { mode: "json".into(), content: r#"{"u":"{{tok}}"}"#.into(), content_type: String::new(), ..Default::default() };
-        iface.variables = vec![crate::storage::KeyValue { key: "tok".into(), value: "abc123".into(), enabled: true }];
+        iface.variables = vec![crate::domain::KeyValue { key: "tok".into(), value: "abc123".into(), enabled: true }];
 
         let res = send(&iface, &mock_env(), &[], &Default::default(), &SendOptions::default()).await.unwrap();
         assert_eq!(res.status, 200);
@@ -449,7 +449,7 @@ mod tests {
         let mut iface: InterfaceFile = InterfaceFile::new("t");
         iface.method = "POST".into();
         iface.url = format!("http://{addr}/api");
-        use crate::storage::{BodyField, InterfaceFile, JsonBody};
+        use crate::domain::{BodyField, InterfaceFile, JsonBody};
         iface.body = Body {
             mode: "json".into(),
             content_type: "application/json".into(),
@@ -471,7 +471,7 @@ mod tests {
             },
             ..Default::default()
         };
-        iface.variables = vec![crate::storage::KeyValue { key: "tok".into(), value: "abc".into(), enabled: true }];
+        iface.variables = vec![crate::domain::KeyValue { key: "tok".into(), value: "abc".into(), enabled: true }];
 
         let res = send(&iface, &mock_env(), &[], &Default::default(), &SendOptions::default()).await.unwrap();
         assert_eq!(res.status, 200);

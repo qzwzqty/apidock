@@ -1,5 +1,5 @@
 //! 领域模型：纯数据结构与校验规则（无 IO）。
-//! 持久化在 `db` 模块（SQLite + sea-orm）；旧文件数据的读取在 `legacy` 模块。
+//! 持久化在 `db` 模块（SQLite + sea-orm）。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -210,8 +210,8 @@ impl BodyField {
 }
 
 /// JSON 请求体结构树：根节点与子节点同构（同一字段类型，可任意嵌套）
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct JsonBody {
     /// 根节点字段（key 固定为空，作为载荷本身）
     pub root: BodyField,
@@ -239,35 +239,6 @@ impl JsonBody {
 impl Default for JsonBody {
     fn default() -> Self {
         Self::new_root("object")
-    }
-}
-
-/// 兼容旧文件：旧结构为 { rootType, fields, items }（根节点仅 object/array）
-impl<'de> Deserialize<'de> for JsonBody {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize, Default)]
-        #[serde(rename_all = "camelCase", default)]
-        struct Legacy {
-            root_type: String,
-            fields: Vec<BodyField>,
-            items: Option<Box<BodyField>>,
-            root: Option<BodyField>,
-        }
-        let raw = Legacy::deserialize(d)?;
-        if let Some(root) = raw.root {
-            return Ok(JsonBody { root });
-        }
-        if raw.root_type == "array" {
-            Ok(JsonBody {
-                root: BodyField { field_type: "array".into(), items: raw.items, ..BodyField::new("") },
-            })
-        } else if !raw.root_type.is_empty() || !raw.fields.is_empty() {
-            Ok(JsonBody {
-                root: BodyField { field_type: "object".into(), children: raw.fields, ..BodyField::new("") },
-            })
-        } else {
-            Ok(JsonBody::default())
-        }
     }
 }
 
@@ -332,57 +303,11 @@ impl Body {
         }
         serde_json::to_string_pretty(&Self::json_example_value(&self.json)).ok()
     }
-
-    /// 旧数据迁移：json 模式且结构树为空但 content 有有效 JSON 文本时，解析进结构树
-    pub fn migrate_json_content(&mut self) {
-        if self.mode != "json" || !self.json.is_empty() || self.content.trim().is_empty() {
-            return;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(&self.content) else {
-            return;
-        };
-        self.json = JsonBody { root: json_value_to_field(&v).unwrap_or_default() };
-    }
 }
 
 fn parse_int(s: &str) -> Option<i64> {
     let t = s.trim();
     t.parse::<i64>().ok().or_else(|| t.parse::<f64>().ok().map(|f| f.trunc() as i64))
-}
-
-pub fn json_value_to_field(v: &Value) -> Option<BodyField> {
-    if v.is_null() {
-        return Some(BodyField { field_type: "null".into(), ..BodyField::new("") });
-    }
-    if let Some(obj) = v.as_object() {
-        let mut children = Vec::new();
-        for (k, sub) in obj {
-            let mut f = json_value_to_field(sub).unwrap_or_else(|| BodyField::new(k));
-            f.key = k.clone();
-            children.push(f);
-        }
-        return Some(BodyField { key: String::new(), field_type: "object".into(), children, ..BodyField::new("") });
-    }
-    if let Some(arr) = v.as_array() {
-        let items = arr.first().and_then(json_value_to_field).map(Box::new);
-        return Some(BodyField { key: String::new(), field_type: "array".into(), items, ..BodyField::new("") });
-    }
-    let field_type = if v.is_string() {
-        "string"
-    } else if v.is_i64() || v.is_u64() {
-        "integer"
-    } else if v.is_f64() {
-        "number"
-    } else if v.is_boolean() {
-        "boolean"
-    } else {
-        "string"
-    };
-    let example = match v {
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    };
-    Some(BodyField { field_type: field_type.into(), example, ..BodyField::new("") })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -493,36 +418,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_json_body_migrates_to_tree() {
-        let mut body = Body {
-            mode: "json".into(),
-            content: r#"{"id": 1, "name": "abc", "tags": ["a"], "ok": true, "meta": null}"#.into(),
-            ..Default::default()
-        };
-        body.migrate_json_content();
-        assert_eq!(body.json.root.field_type, "object");
-        assert_eq!(body.json.root.children.len(), 5);
-        let id = body.json.root.children.iter().find(|f| f.key == "id").unwrap();
-        assert_eq!(id.field_type, "integer");
-        assert_eq!(id.example, "1");
-        let tags = body.json.root.children.iter().find(|f| f.key == "tags").unwrap();
-        assert_eq!(tags.field_type, "array");
-        assert!(tags.items.is_some());
-        let ok = body.json.root.children.iter().find(|f| f.key == "ok").unwrap();
-        assert_eq!(ok.field_type, "boolean");
-        // 生成示例载荷
-        assert_eq!(body.json_example_payload().is_some(), true);
-        let v: serde_json::Value = serde_json::from_str(&body.json_example_payload().unwrap()).unwrap();
-        assert_eq!(v["id"], 1);
-        assert_eq!(v["tags"][0], "a");
-        assert!(v["meta"].is_null());
-        // 非 json 模式不迁移
-        let mut raw = Body { mode: "raw".into(), content: "{\"a\":1}".into(), ..Default::default() };
-        raw.migrate_json_content();
-        assert!(raw.json.is_empty());
-    }
-
-    #[test]
     fn json_body_root_field_serializes_and_reads_back() {
         // 根节点为叶子类型（非 object/array）
         let body = Body {
@@ -538,13 +433,6 @@ mod tests {
         let back: Body = serde_json::from_str(&text).unwrap();
         assert_eq!(back.json.root.field_type, "string");
         assert_eq!(back.json.root.example, "{{host}}/api");
-        // 旧格式（rootType/fields/items）反序列化兼容
-        let legacy = r#"{"mode":"json","content":"","contentType":"","json":{"rootType":"array","fields":[],"items":{"key":"","name":"","required":false,"type":"integer","example":"3","description":"","children":[],"items":null}},"form":[],"filePath":null}"#;
-        let legacy_body: Body = serde_json::from_str(legacy).unwrap();
-        assert_eq!(legacy_body.json.root.field_type, "array");
-        let items = legacy_body.json.root.items.as_ref().unwrap();
-        assert_eq!(items.field_type, "integer");
-        assert_eq!(items.example, "3");
     }
 
     #[test]

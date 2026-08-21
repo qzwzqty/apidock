@@ -15,12 +15,10 @@ pub fn db_path(root: &Path) -> PathBuf {
     root.join(DB_FILE)
 }
 
-/// 打开（或创建）数据根目录内的数据库：建库、设 PRAGMA、跑迁移；
-/// 若为全新库且根目录内存在旧版文件数据，则执行一次性迁移导入。
+/// 打开（或创建）数据根目录内的数据库：建库、设 PRAGMA、跑 schema 迁移。
 pub async fn open(root: &Path) -> Result<DatabaseConnection, String> {
     std::fs::create_dir_all(root).map_err(|e| format!("创建数据根目录失败：{e}"))?;
     let path = db_path(root);
-    let fresh = !path.exists();
 
     let url = format!(
         "sqlite://{}?mode=rwc",
@@ -50,10 +48,6 @@ pub async fn open(root: &Path) -> Result<DatabaseConnection, String> {
         .map_err(|e| format!("设置 busy_timeout 失败：{e}"))?;
 
     migration::migrate(&db).await?;
-
-    if fresh && crate::legacy::has_legacy_data(root) {
-        crate::legacy::import_legacy(&db, root).await?;
-    }
     Ok(db)
 }
 

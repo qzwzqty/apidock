@@ -806,8 +806,7 @@ pub async fn get_interface(
     iface_key: &str,
 ) -> Result<InterfaceFile, String> {
     let (_, _, row) = find_iface_row(db, team_key, project_key, group_path, iface_key).await?;
-    let mut iface: InterfaceFile = parse_json(&row.doc, InterfaceFile::new(&row.key));
-    iface.body.migrate_json_content();
+    let iface: InterfaceFile = parse_json(&row.doc, InterfaceFile::new(&row.key));
     Ok(iface)
 }
 

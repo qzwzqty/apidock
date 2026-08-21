@@ -56,7 +56,6 @@ src-tauri/src/
 ├── domain.rs                # 纯数据结构（无 IO）：Team/Project/Group/Interface/
 │                            #   Environment/GlobalParams/Variable/Auth/Body/Assertion
 ├── db/                      # SQLite 持久化：实体、sea-orm-migration 迁移、仓储（事务/唯一约束）
-├── legacy.rs                # 旧版文件数据一次性导入（JSONC 宽容解析仅存于此）
 ├── http/                    # reqwest 构建、TLS/CA/代理/超时/重定向、请求执行与取消
 ├── variables/               # {{var}} 模板解析与替换、JSONPath 实现（可选引入 jsonpath 库）
 ├── importer/                # OpenAPI 3.0/3.1、Postman Collection v2 → domain

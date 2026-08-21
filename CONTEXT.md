@@ -43,9 +43,6 @@ _Avoid_: 请求作为正式名词（口语可通，文档统一用「接口」�
 **变量替换 (Variable Substitution)**:
 把 URL、请求头、请求体中的 `{{变量名}}` 模板解析为实际值的过程。生效优先级：**接口级 > 项目全局变量 > 环境变量**；`host` 取自当前激活环境，可按同一优先级被覆盖。
 
-**数据迁移 (Data Migration)**:
-首次打开含旧版文件数据（`api-mgmt/` 目录、`workspace.json`）的根目录时，在单个事务内把文件树导入数据库；成功后旧文件归档到 `.file-storage-backup-<时间戳>/`（不删除）。OpenAPI / Postman 的导入导出是独立的数据交换格式，不属于此迁移。
-
 **请求体 (Request Body)**:
 请求携带的载荷，支持多种模式：`none`（无）、`json`、`raw`（原始文本）、`urlencoded`（表单）、`form-data`（多段表单）、`file`（文件）。
 

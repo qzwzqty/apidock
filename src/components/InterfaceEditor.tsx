@@ -1,8 +1,8 @@
 import { useState, type ReactNode } from "react";
 import { marked } from "marked";
 import { Save, Send, Check, SlidersHorizontal, RotateCcw, Plus, Trash2, Eye, PencilLine, ChevronRight, ChevronDown, Wand2 } from "lucide-react";
-import type { ApiParam, Assertion, Body, BodyField, InterfaceFile, JsonBody, KeyValue } from "@/lib/api";
-import { EMPTY_BODY, isJsonBodyEmpty, newApiParam, newBodyField, jsonBodyToValue } from "@/lib/api";
+import type { ApiParam, Assertion, BodyField, InterfaceFile, JsonBody, KeyValue } from "@/lib/api";
+import { isJsonBodyEmpty, newApiParam, newBodyField, jsonBodyToValue } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogFooter } from "@/components/ui/dialog";
@@ -39,70 +39,6 @@ const BODY_MODES: [string, string][] = [
 
 type Tab = "params" | "headers" | "body" | "auth" | "vars" | "assert" | "desc";
 
-const EMPTY_AUTH = { kind: "none", token: "", username: "", password: "", apiKeyName: "", apiKeyIn: "header", apiKeyValue: "" };
-// 向后兼容：旧文件缺 body/auth/variables/assertions；旧 json 文本 content 迁移进结构树
-function normalize(iface: InterfaceFile): InterfaceFile {
-  const body: Body = { ...EMPTY_BODY, ...(iface.body ?? {}) };
-  body.json = legacyJsonToBody(body.json);
-  body.form = (body.form ?? []).map(legacyParam);
-  if (body.mode === "json" && isJsonBodyEmpty(body.json) && body.content.trim()) {
-    try {
-      const v = JSON.parse(body.content);
-      body.json = { root: toField(v) };
-    } catch {
-      /* 非合法 JSON 保持原样（仍可按 raw 发送） */
-    }
-  }
-  return {
-    ...iface,
-    headers: (iface.headers ?? []).map(legacyParam),
-    query: (iface.query ?? []).map(legacyParam),
-    variables: iface.variables ?? [],
-    assertions: iface.assertions ?? [],
-    body,
-    auth: { ...EMPTY_AUTH, ...(iface.auth ?? {}) },
-  };
-}
-
-/** 旧版 {rootType,fields,items} 结构的 json body → 根节点同构结构 */
-function legacyJsonToBody(json: JsonBody | { rootType?: string; fields?: BodyField[]; items?: BodyField | null }): JsonBody {
-  if (json && "root" in json && json.root) return json as JsonBody;
-  const anyJ = json as { rootType?: string; fields?: BodyField[]; items?: BodyField | null };
-  if (!anyJ || (!anyJ.rootType && !(anyJ.fields ?? []).length && !anyJ.items)) {
-    return { root: newBodyField("") };
-  }
-  if (anyJ.rootType === "array") {
-    return { root: { ...newBodyField(""), type: "array", items: anyJ.items ?? null } };
-  }
-  return { root: { ...newBodyField(""), type: "object", children: anyJ.fields ?? [] } };
-}
-
-/** 旧版 {key,value,enabled} 参数自动升级为文档化参数（文档模式下全部参与发送，启停权移交未来的调试模式） */
-function legacyParam(p: ApiParam | KeyValue): ApiParam {
-  const anyP = p as ApiParam;
-  return {
-    key: anyP.key ?? "",
-    example: anyP.example ?? (p as KeyValue).value ?? "",
-    required: anyP.required ?? false,
-    type: anyP.type ?? "",
-    description: anyP.description ?? "",
-    enabled: true,
-  };
-}
-
-function toField(v: unknown): BodyField {
-  if (v === null) return { key: "", name: "", required: false, type: "null", example: "null", description: "", children: [], items: null };
-  if (Array.isArray(v)) {
-    return { key: "", name: "", required: false, type: "array", example: "", description: "", children: [], items: v.length ? toField(v[0]) : newBodyField() };
-  }
-  if (typeof v === "object") {
-    const children = Object.entries(v as Record<string, unknown>).map(([k, val]) => ({ ...toField(val), key: k }));
-    return { key: "", name: "", required: false, type: "object", example: "", description: "", children, items: null };
-  }
-  const type = typeof v === "string" ? "string" : typeof v === "boolean" ? "boolean" : Number.isInteger(v) ? "integer" : "number";
-  return { key: "", name: "", required: false, type, example: String(v), description: "", children: [], items: null };
-}
-
 /** 调试模式 JSON 初始文本：由文档结构树生成示例（树为空时回落旧 content） */
 function initialDebugJson(body: InterfaceFile["body"]): string {
   if (body.mode === "json" && !isJsonBodyEmpty(body.json)) {
@@ -133,7 +69,7 @@ export function InterfaceEditor({
   onSend: (doc: InterfaceFile) => void;
   onModeChange?: (mode: EditorMode) => void;
 }) {
-  const [base, setBase] = useState<InterfaceFile>(normalize(doc));
+  const [base, setBase] = useState<InterfaceFile>({ ...doc });
   const [mode, setMode] = useState<EditorMode>("doc");
   const [tab, setTab] = useState<Tab>("params");
   const [dirty, setDirty] = useState(false);
@@ -153,7 +89,7 @@ export function InterfaceEditor({
   const [lastDocId, setLastDocId] = useState(doc.id);
   if (doc.id !== lastDocId) {
     setLastDocId(doc.id);
-    setBase(normalize(doc));
+    setBase({ ...doc });
     setDirty(false);
     setSaved(false);
     setDebugJson(null);

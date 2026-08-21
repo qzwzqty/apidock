@@ -3,7 +3,6 @@ mod db;
 mod domain;
 mod http;
 mod imports;
-mod legacy;
 mod runner;
 mod variables;
 

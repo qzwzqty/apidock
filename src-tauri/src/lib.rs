@@ -79,13 +79,21 @@ async fn ensure_open(state: &AppState) -> Result<(), String> {
     if already {
         return Ok(());
     }
-    let Some(root) = restore_root_path() else {
-        return Ok(());
+    // 优先恢复上次选择的数据根；没有则回落到默认根 <home>/.apidock（自动创建）
+    let root = match restore_root_path() {
+        Some(r) => r,
+        None => default_data_root().ok_or("无法确定用户主目录，请手动选择数据根目录")?,
     };
     let db = db::open(&root).await?;
+    let _ = persist_root(&root);
     *state.root.lock().unwrap() = Some(root);
     *state.db.lock().unwrap() = Some(db);
     Ok(())
+}
+
+/// 默认数据根目录：`<用户主目录>/.apidock`（主目录路径随操作系统而定）
+fn default_data_root() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".apidock"))
 }
 
 fn with_db(state: &AppState) -> Result<DatabaseConnection, String> {
@@ -123,11 +131,10 @@ fn restore_root_path() -> Option<PathBuf> {
 }
 
 fn recent_root_path_file() -> PathBuf {
-    let dir = std::env::var("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("apidock");
-    dir.join("recent-data-root.txt")
+    let base = dirs::config_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("apidock").join("recent-data-root.txt")
 }
 
 fn persist_root(root: &PathBuf) -> Result<(), String> {
@@ -843,4 +850,22 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_root_is_home_dot_apidock() {
+        // 只断言路径形态，不创建目录
+        let root = default_data_root().expect("应能解析用户主目录");
+        assert!(root.ends_with(".apidock"), "默认根应为 <home>/.apidock，实际：{}", root.display());
+    }
+
+    #[test]
+    fn recent_root_file_name() {
+        let f = recent_root_path_file();
+        assert!(f.ends_with("recent-data-root.txt"), "实际：{}", f.display());
+    }
 }

@@ -176,7 +176,8 @@ function Node({
   return (
     <div>
       <div
-        className="group flex items-center gap-1 rounded-md py-1 pr-1 text-sm cursor-pointer text-muted-foreground hover:bg-muted hover:text-foreground"
+        ref={rowRef}
+        className="group relative flex items-center gap-1 rounded-md py-1 pr-1 text-sm cursor-pointer text-muted-foreground hover:bg-muted hover:text-foreground"
         style={{ paddingLeft: depth * 14 + 2 }}
         onClick={() => setExpanded((e) => !e)}
         title={node.key}
@@ -187,71 +188,32 @@ function Node({
         <Folder className="h-3.5 w-3.5 shrink-0 text-yellow-500/80" />
         <span className="min-w-0 truncate">{node.name}</span>
         <span className="ml-auto flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100">
-          {onRunGroup && (
-            <button
-              className="rounded p-0.5 hover:bg-border cursor-pointer"
-              title="运行本分组全部接口"
-              onClick={(e) => {
-                e.stopPropagation();
-                onRunGroup([...path, node.key]);
-              }}
-            >
-              <Play className="h-3 w-3" />
-            </button>
-          )}
           <button
-            className="rounded p-0.5 hover:bg-border cursor-pointer"
-            title="新建分组"
+            className={cn("rounded p-0.5 hover:bg-border cursor-pointer", menuOpen && "opacity-100")}
+            title="更多操作（新建 / 运行 / 编辑 / 移动 / 删除）"
             onClick={(e) => {
               e.stopPropagation();
-              onCreateGroup([...path, node.key]);
+              setMenuOpen((v) => !v);
             }}
           >
-            <FolderPlus className="h-3 w-3" />
-          </button>
-          <button
-            className="rounded p-0.5 hover:bg-border cursor-pointer"
-            title="新建接口"
-            onClick={(e) => {
-              e.stopPropagation();
-              onCreateIface([...path, node.key]);
-            }}
-          >
-            <FilePlus2 className="h-3 w-3" />
-          </button>
-          <button
-            className="rounded p-0.5 hover:bg-border cursor-pointer"
-            title="重命名分组"
-            onClick={(e) => {
-              e.stopPropagation();
-              onRenameGroup({ groupPath: [...path, node.key], key: node.key });
-            }}
-          >
-            <Pencil className="h-3 w-3" />
-          </button>
-          {onMoveGroup && (
-            <button
-              className="rounded p-0.5 hover:bg-border cursor-pointer"
-              title="移动到其它分组"
-              onClick={(e) => {
-                e.stopPropagation();
-                onMoveGroup({ groupPath: [...path, node.key], key: node.key });
-              }}
-            >
-              <MoveRight className="h-3 w-3" />
-            </button>
-          )}
-          <button
-            className="rounded p-0.5 hover:bg-border hover:text-red-400 cursor-pointer"
-            title="删除分组"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDeleteGroup({ groupPath: [...path, node.key], key: node.key });
-            }}
-          >
-            <Trash2 className="h-3 w-3" />
+            <MoreVertical className="h-3 w-3" />
           </button>
         </span>
+        {menuOpen && (
+          <div className="absolute right-1 top-7 z-50 w-40 overflow-hidden rounded-md border border-border bg-muted shadow-xl">
+            <MenuItem icon={<FilePlus2 className="h-3.5 w-3.5" />} label="新建接口" onClick={() => { setMenuOpen(false); onCreateIface([...path, node.key]); }} />
+            <MenuItem icon={<FolderPlus className="h-3.5 w-3.5" />} label="新建分组" onClick={() => { setMenuOpen(false); onCreateGroup([...path, node.key]); }} />
+            {onRunGroup && (
+              <MenuItem icon={<Play className="h-3.5 w-3.5" />} label="运行全部" onClick={() => { setMenuOpen(false); onRunGroup([...path, node.key]); }} />
+            )}
+            <MenuItem icon={<Pencil className="h-3.5 w-3.5" />} label="编辑" onClick={() => { setMenuOpen(false); onRenameGroup({ groupPath: [...path, node.key], key: node.key }); }} />
+            {onMoveGroup && (
+              <MenuItem icon={<MoveRight className="h-3.5 w-3.5" />} label="移动" onClick={() => { setMenuOpen(false); onMoveGroup({ groupPath: [...path, node.key], key: node.key }); }} />
+            )}
+            <div className="my-1 h-px bg-border" />
+            <MenuItem danger icon={<Trash2 className="h-3.5 w-3.5" />} label="删除" onClick={() => { setMenuOpen(false); onDeleteGroup({ groupPath: [...path, node.key], key: node.key }); }} />
+          </div>
+        )}
       </div>
       {expanded && (
         <div className="ml-2 border-l border-border">

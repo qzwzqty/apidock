@@ -29,7 +29,6 @@ export interface WorkspaceState {
 }
 
 export interface AppSession {
-  dataRoot: string | null;
   teams: TeamInfo[];
   workspace: WorkspaceState;
 }

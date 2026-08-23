@@ -5,7 +5,7 @@ use crate::domain::*;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, DatabaseTransaction, EntityTrait,
-    QueryFilter, Set, TransactionTrait,
+    QueryFilter, QueryOrder, Set, TransactionTrait,
 };
 use std::collections::HashMap;
 
@@ -186,29 +186,6 @@ async fn find_iface_row(
     Ok((p, g, row))
 }
 
-/// 分组子树的全部 id（含自身）与深度（用于按深度倒序删除）
-async fn subtree_groups(
-    db: &(impl sea_orm::ConnectionTrait + TransactionTrait),
-    root_id: i32,
-) -> Result<Vec<(i32, usize)>, String> {
-    let mut out = vec![(root_id, 0usize)];
-    let mut frontier = vec![root_id];
-    let mut depth = 0usize;
-    while !frontier.is_empty() {
-        depth += 1;
-        let children = group::Entity::find()
-            .filter(group::Column::ParentId.is_in(frontier.clone()))
-            .all(db)
-            .await
-            .map_err(db_err)?;
-        frontier = children.iter().map(|c| c.id).collect();
-        for c in &children {
-            out.push((c.id, depth));
-        }
-    }
-    Ok(out)
-}
-
 // ----- workspace -----
 
 pub async fn get_workspace(db: &DatabaseConnection) -> WorkspaceState {
@@ -253,15 +230,12 @@ pub async fn save_workspace(db: &DatabaseConnection, state: &WorkspaceState) -> 
 // ----- 团队 -----
 
 pub async fn list_teams(db: &DatabaseConnection) -> Vec<TeamInfo> {
-    let Ok(rows) = team::Entity::find().all(db).await else {
+    let Ok(rows) = team::Entity::find().order_by_asc(team::Column::Name).all(db).await else {
         return Vec::new();
     };
-    let mut teams: Vec<TeamInfo> = rows
-        .into_iter()
+    rows.into_iter()
         .map(|t| TeamInfo { key: t.key, name: t.name })
-        .collect();
-    teams.sort_by(|a, b| a.name.cmp(&b.name));
-    teams
+        .collect()
 }
 
 pub async fn create_team(
@@ -313,21 +287,12 @@ pub async fn rename_team(
 }
 
 pub async fn delete_team(db: &DatabaseConnection, team_key: &str) -> Result<(), String> {
+    // 外键 CASCADE：项目 → 接口/分组/环境 一并删除
     let t = find_team(db, team_key).await?;
-    let txn = db.begin().await.map_err(db_err)?;
-    let projects = project::Entity::find()
-        .filter(project::Column::TeamId.eq(t.id))
-        .all(&txn)
-        .await
-        .map_err(db_err)?;
-    for p in &projects {
-        delete_project_rows(&txn, p.id).await?;
-    }
     team::Entity::delete_by_id(t.id)
-        .exec(&txn)
+        .exec(db)
         .await
         .map_err(db_err)?;
-    txn.commit().await.map_err(db_err)?;
     Ok(())
 }
 
@@ -342,17 +307,15 @@ pub async fn list_projects(db: &DatabaseConnection, team_key: &str) -> Vec<Proje
     };
     let Ok(rows) = project::Entity::find()
         .filter(project::Column::TeamId.eq(t.id))
+        .order_by_asc(project::Column::Name)
         .all(db)
         .await
     else {
         return Vec::new();
     };
-    let mut projects: Vec<ProjectInfo> = rows
-        .into_iter()
+    rows.into_iter()
         .map(|p| ProjectInfo { key: p.key, name: p.name })
-        .collect();
-    projects.sort_by(|a, b| a.name.cmp(&b.name));
-    projects
+        .collect()
 }
 
 /// 项目默认三套内置环境
@@ -438,58 +401,17 @@ pub async fn create_project(
     Ok(ProjectInfo { key: key.to_string(), name: name.to_string() })
 }
 
-/// 删除项目下全部行（事务内调用）：接口 → 分组 → 环境 → 项目
-async fn delete_project_rows(txn: &DatabaseTransaction, project_id: i32) -> Result<(), String> {
-    iface::Entity::delete_many()
-        .filter(iface::Column::ProjectId.eq(project_id))
-        .exec(txn)
-        .await
-        .map_err(db_err)?;
-    // 分组按深度倒序删，避免外键父先于子被删
-    let all = group::Entity::find()
-        .filter(group::Column::ProjectId.eq(project_id))
-        .all(txn)
-        .await
-        .map_err(db_err)?;
-    let by_id: HashMap<i32, Option<i32>> = all.iter().map(|g| (g.id, g.parent_id)).collect();
-    let depth = |mut id: i32| {
-        let mut d = 0usize;
-        while let Some(Some(parent)) = by_id.get(&id) {
-            d += 1;
-            id = *parent;
-        }
-        d
-    };
-    let mut rows: Vec<(i32, usize)> = all.iter().map(|g| (g.id, depth(g.id))).collect();
-    rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    for (id, _) in rows {
-        group::Entity::delete_by_id(id)
-            .exec(txn)
-            .await
-            .map_err(db_err)?;
-    }
-    environment::Entity::delete_many()
-        .filter(environment::Column::ProjectId.eq(project_id))
-        .exec(txn)
-        .await
-        .map_err(db_err)?;
-    project::Entity::delete_many()
-        .filter(project::Column::Id.eq(project_id))
-        .exec(txn)
-        .await
-        .map_err(db_err)?;
-    Ok(())
-}
-
+/// 删除项目（外键 CASCADE 清理接口/分组/环境，单条语句保证原子）
 pub async fn delete_project(
     db: &DatabaseConnection,
     team_key: &str,
     project_key: &str,
 ) -> Result<(), String> {
     let (_, p) = find_project(db, team_key, project_key).await?;
-    let txn = db.begin().await.map_err(db_err)?;
-    delete_project_rows(&txn, p.id).await?;
-    txn.commit().await.map_err(db_err)?;
+    project::Entity::delete_by_id(p.id)
+        .exec(db)
+        .await
+        .map_err(db_err)?;
     Ok(())
 }
 
@@ -633,6 +555,72 @@ fn build_level(
         .collect()
 }
 
+/// 一次取回项目全部接口定义（含分组路径与键），供导出/批量运行使用，避免逐接口查询
+pub async fn list_interfaces_full(
+    db: &DatabaseConnection,
+    team_key: &str,
+    project_key: &str,
+) -> Vec<(Vec<String>, String, InterfaceFile)> {
+    let Ok(t) = find_team_opt(db, team_key).await else {
+        return Vec::new();
+    };
+    let Some(t) = t else {
+        return Vec::new();
+    };
+    let Ok(Some(p)) = find_project_opt(db, t.id, project_key).await else {
+        return Vec::new();
+    };
+    let Ok(groups) = group::Entity::find()
+        .filter(group::Column::ProjectId.eq(p.id))
+        .all(db)
+        .await
+    else {
+        return Vec::new();
+    };
+    let Ok(rows) = iface::Entity::find()
+        .filter(iface::Column::ProjectId.eq(p.id))
+        .all(db)
+        .await
+    else {
+        return Vec::new();
+    };
+
+    // 分组 id -> 完整分组路径（根哨兵路径为空）
+    let by_id: HashMap<i32, &group::Model> = groups.iter().map(|g| (g.id, g)).collect();
+    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+    let mut root_id = None;
+    for g in &groups {
+        match g.parent_id {
+            None => root_id = Some(g.id),
+            Some(pid) => children.entry(pid).or_default().push(g.id),
+        }
+    }
+    let mut path_of: HashMap<i32, Vec<String>> = HashMap::new();
+    if let Some(root) = root_id {
+        let mut stack = vec![(root, Vec::new())];
+        while let Some((id, path)) = stack.pop() {
+            path_of.insert(id, path.clone());
+            if let Some(child_ids) = children.get(&id) {
+                for cid in child_ids {
+                    let mut p = path.clone();
+                    if let Some(c) = by_id.get(cid) {
+                        p.push(c.key.clone());
+                    }
+                    stack.push((*cid, p));
+                }
+            }
+        }
+    }
+
+    rows.into_iter()
+        .map(|r| {
+            let path = path_of.get(&r.group_id).cloned().unwrap_or_default();
+            let iface = parse_json(&r.doc, InterfaceFile::new(&r.key));
+            (path, r.key, iface)
+        })
+        .collect()
+}
+
 pub async fn create_group(
     db: &DatabaseConnection,
     team_key: &str,
@@ -710,22 +698,11 @@ pub async fn delete_group(
     if g.parent_id.is_none() {
         return Err("不能删除项目根".into());
     }
-    let txn = db.begin().await.map_err(db_err)?;
-    let mut subtree = subtree_groups(&txn, g.id).await?;
-    let ids: Vec<i32> = subtree.iter().map(|(id, _)| *id).collect();
-    iface::Entity::delete_many()
-        .filter(iface::Column::GroupId.is_in(ids.clone()))
-        .exec(&txn)
+    // 外键 CASCADE：子分组（自引用）与其下接口一并删除，单条语句保证原子
+    group::Entity::delete_by_id(g.id)
+        .exec(db)
         .await
         .map_err(db_err)?;
-    subtree.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    for (id, _) in subtree {
-        group::Entity::delete_by_id(id)
-            .exec(&txn)
-            .await
-            .map_err(db_err)?;
-    }
-    txn.commit().await.map_err(db_err)?;
     Ok(())
 }
 
@@ -899,6 +876,59 @@ pub async fn move_interface(
     Ok(iface_key.to_string())
 }
 
+// ----- 导入 -----
+
+/// 导入条目：分组路径 + 接口键 + 完整定义
+pub struct ImportItem {
+    pub group_path: Vec<String>,
+    pub key: String,
+    pub doc: InterfaceFile,
+}
+
+/// 事务内批量导入：缺失分组自动创建并复用；单条冲突记 Err 跳过、不影响其余；
+/// 仅整体提交失败（连接级错误）时回滚全部，保证不留下半成品。
+pub async fn apply_import(
+    db: &DatabaseConnection,
+    team_key: &str,
+    project_key: &str,
+    items: &[ImportItem],
+) -> Result<Vec<Result<(), String>>, String> {
+    let (_, p) = find_project(db, team_key, project_key).await?;
+    let txn = db.begin().await.map_err(db_err)?;
+    let mut results = Vec::with_capacity(items.len());
+    for item in items {
+        let target = match ensure_group_path(&txn, p.id, &item.group_path).await {
+            Ok(g) => g,
+            Err(e) => {
+                results.push(Err(format!("分组创建失败：{e}")));
+                continue;
+            }
+        };
+        if sibling_key_taken(&txn, target.id, &item.key).await? {
+            results.push(Err(format!("接口键 {} 已被占用", item.key)));
+            continue;
+        }
+        let mut doc = item.doc.clone();
+        if let Some(payload) = doc.body.json_example_payload() {
+            doc.body.content = payload;
+        }
+        let insert = iface::ActiveModel {
+            project_id: Set(p.id),
+            group_id: Set(target.id),
+            key: Set(item.key.clone()),
+            name: Set(doc.name.clone()),
+            method: Set(doc.method.clone()),
+            doc: Set(to_json(&doc)?),
+            ..Default::default()
+        }
+        .insert(&txn)
+        .await;
+        results.push(insert.map(|_| ()).map_err(db_err));
+    }
+    txn.commit().await.map_err(db_err)?;
+    Ok(results)
+}
+
 // ----- 环境 -----
 
 pub async fn list_environments(
@@ -918,13 +948,13 @@ pub async fn list_environments(
     let active = p.active_environment_id.clone();
     let Ok(rows) = environment::Entity::find()
         .filter(environment::Column::ProjectId.eq(p.id))
+        .order_by_asc(environment::Column::EnvId)
         .all(db)
         .await
     else {
         return Vec::new();
     };
-    let mut list: Vec<EnvironmentSummary> = rows
-        .into_iter()
+    rows.into_iter()
         .map(|e| EnvironmentSummary {
             active: Some(e.env_id.clone()) == active,
             id: e.env_id,
@@ -933,9 +963,7 @@ pub async fn list_environments(
             host: e.host,
             builtin: e.builtin,
         })
-        .collect();
-    list.sort_by(|a, b| a.id.cmp(&b.id));
-    list
+        .collect()
 }
 
 pub async fn get_environment(

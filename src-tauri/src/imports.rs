@@ -699,7 +699,7 @@ fn import_name(raw: &str) -> String {
     }
 }
 
-/// 把待导入接口写入目标项目（数据库）
+/// 把待导入接口写入目标项目（单个事务批量落库：缺失分组自动创建，失败不残留半成品）
 pub async fn import_into_project(
     db: &DatabaseConnection,
     team_key: &str,
@@ -710,15 +710,8 @@ pub async fn import_into_project(
     let mut used_names: std::collections::HashMap<String, std::collections::HashSet<String>> =
         std::collections::HashMap::new();
 
-    for iface in ifaces {
-        let mut path = Vec::new();
-        for seg in &iface.group_path {
-            path.push(seg.clone());
-            let prefix = &path[..path.len() - 1];
-            let _ = crate::db::repo::create_group(db, team_key, project_key, prefix, seg, seg).await;
-        }
-    }
-
+    // 先做本批内的名称去重计算
+    let mut items = Vec::with_capacity(ifaces.len());
     for iface in ifaces {
         let dir = iface.group_path.join("/");
         let name = import_name(&iface.name);
@@ -731,11 +724,6 @@ pub async fn import_into_project(
         if final_name != name {
             report.warnings.push(format!("接口名称 {name} 在本目录重复，已重命名为 {final_name}"));
         }
-        if let Err(e) = crate::db::repo::create_interface(db, team_key, project_key, &iface.group_path, &final_name, &final_name).await {
-            report.skipped += 1;
-            report.warnings.push(format!("接口 {name} 创建失败：{e}"));
-            continue;
-        }
         let mut f = iface.to_file();
         f.name = final_name.clone();
         f.method = iface.method.clone();
@@ -745,11 +733,20 @@ pub async fn import_into_project(
         f.body = iface.body.clone();
         f.auth = iface.auth.clone();
         f.description = iface.description.clone();
-        match crate::db::repo::save_interface(db, team_key, project_key, &iface.group_path, &final_name, &f).await {
-            Ok(_) => report.total += 1,
+        items.push(crate::db::repo::ImportItem {
+            group_path: iface.group_path.clone(),
+            key: final_name,
+            doc: f,
+        });
+    }
+
+    let results = crate::db::repo::apply_import(db, team_key, project_key, &items).await?;
+    for (item, res) in items.iter().zip(results) {
+        match res {
+            Ok(()) => report.total += 1,
             Err(e) => {
                 report.skipped += 1;
-                report.warnings.push(format!("接口 {final_name} 写入失败：{e}"));
+                report.warnings.push(format!("接口 {} 导入失败：{e}", item.key));
             }
         }
     }
@@ -770,6 +767,12 @@ pub async fn export_openapi(
 ) -> Result<ExportOutcome, String> {
     let settings = crate::db::repo::get_project_settings(db, team_key, project_key).await?;
     let tree = crate::db::repo::list_interface_tree(db, team_key, project_key).await;
+    let all = crate::db::repo::list_interfaces_full(db, team_key, project_key).await;
+    let mut by_ref: std::collections::HashMap<(String, String), domain::InterfaceFile> =
+        std::collections::HashMap::new();
+    for (path, key, f) in all {
+        by_ref.insert((path.join("/"), key), f);
+    }
     let mut warnings = Vec::new();
     let mut paths: serde_json::Map<String, Value> = serde_json::Map::new();
 
@@ -777,11 +780,10 @@ pub async fn export_openapi(
     let mut iface_refs: Vec<(Vec<String>, String)> = Vec::new();
     flatten_ifaces(&tree, Vec::new(), &mut iface_refs);
     for (group_path, key) in iface_refs {
-        let Ok(iface) = crate::db::repo::get_interface(db, team_key, project_key, &group_path, &key).await
-        else {
+        let Some(iface) = by_ref.get(&(group_path.join("/"), key.clone())) else {
             continue;
         };
-        let (method, path_str, operation, host) = build_interface_operation(&iface, project_key, &key, &mut warnings);
+        let (method, path_str, operation, host) = build_interface_operation(iface, project_key, &key, &mut warnings);
         if let Some(h) = &host {
             if !hosts.contains(h) {
                 hosts.push(h.clone());

@@ -67,6 +67,13 @@ pub async fn run_project(
     let mut refs = Vec::new();
     collect(&tree, Vec::new(), &mut refs);
 
+    let all = repo::list_interfaces_full(db, team_key, project_key).await;
+    let mut by_ref: std::collections::HashMap<(String, String), domain::InterfaceFile> =
+        std::collections::HashMap::new();
+    for (path, key, f) in all {
+        by_ref.insert((path.join("/"), key), f);
+    }
+
     let mut items = Vec::new();
     let mut passed = 0usize;
     let mut failed = 0usize;
@@ -78,24 +85,22 @@ pub async fn run_project(
                 continue;
             }
         }
-        let iface = match repo::get_interface(db, team_key, project_key, &group_path, &key).await {
-            Ok(i) => i,
-            Err(e) => {
-                failed += 1;
-                items.push(RunItem {
-                    group_path,
-                    name: key.clone(),
-                    key,
-                    method: String::new(),
-                    url: String::new(),
-                    status: None,
-                    time_ms: None,
-                    ok: false,
-                    error: Some(e),
-                    assertion_results: Vec::new(),
-                });
-                continue;
-            }
+        let Some(iface) = by_ref.get(&(group_path.join("/"), key.clone())) else {
+            failed += 1;
+            let missing = format!("接口 {} 不存在", key);
+            items.push(RunItem {
+                group_path,
+                name: key.clone(),
+                key,
+                method: String::new(),
+                url: String::new(),
+                status: None,
+                time_ms: None,
+                ok: false,
+                error: Some(missing),
+                assertion_results: Vec::new(),
+            });
+            continue;
         };
         let opts = SendOptions { proxy: proxy.clone(), ..Default::default() };
         let base = RunItem {
@@ -111,7 +116,7 @@ pub async fn run_project(
             assertion_results: Vec::new(),
         };
 
-        match http::send(&iface, &env, &settings.global_variables, &settings.global_params, &opts).await {
+        match http::send(iface, &env, &settings.global_variables, &settings.global_params, &opts).await {
             Ok(resp) => {
                 let results = if iface.assertions.is_empty() {
                     Vec::new()

@@ -18,7 +18,6 @@ use std::sync::{Arc, Mutex};
 use tauri::State;
 
 pub struct AppState {
-    root: Mutex<Option<PathBuf>>,
     db: Mutex<Option<DatabaseConnection>>,
     cookiejar: Arc<reqwest::cookie::Jar>,
 }
@@ -26,18 +25,16 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
-            root: Mutex::new(None),
             db: Mutex::new(None),
             cookiejar: Arc::new(reqwest::cookie::Jar::default()),
         }
     }
 }
 
-/// 一次会话的初始快照：数据根目录 + 团队列表 + 标签栏状态
+/// 一次会话的初始快照：团队列表 + 标签栏状态
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSession {
-    pub data_root: Option<String>,
     pub teams: Vec<TeamInfo>,
     pub workspace: WorkspaceState,
 }
@@ -58,7 +55,6 @@ async fn ensure_open(state: &AppState) -> Result<(), String> {
     }
     let root = default_data_root().ok_or("无法确定用户主目录")?;
     let db = db::open(&root).await?;
-    *state.root.lock().unwrap() = Some(root);
     *state.db.lock().unwrap() = Some(db);
     Ok(())
 }
@@ -78,18 +74,13 @@ fn with_db(state: &AppState) -> Result<DatabaseConnection, String> {
 }
 
 async fn build_session(state: &AppState) -> Result<AppSession, String> {
-    let (root, db) = (
-        state.root.lock().unwrap().clone(),
-        state.db.lock().unwrap().clone(),
-    );
-    match (root, db) {
-        (Some(r), Some(db)) => Ok(AppSession {
-            data_root: Some(r.to_string_lossy().into_owned()),
+    let db = state.db.lock().unwrap().clone();
+    match db {
+        Some(db) => Ok(AppSession {
             teams: repo::list_teams(&db).await,
             workspace: repo::get_workspace(&db).await,
         }),
-        _ => Ok(AppSession {
-            data_root: None,
+        None => Ok(AppSession {
             teams: Vec::new(),
             workspace: WorkspaceState::new(),
         }),

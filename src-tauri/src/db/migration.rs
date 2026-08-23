@@ -7,7 +7,7 @@ pub struct Migrator;
 
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(M001Init)]
+        vec![Box::new(M001Init), Box::new(M002AddProjectIndices)]
     }
 }
 
@@ -76,8 +76,15 @@ enum Environments {
     Variables,
 }
 
-#[derive(DeriveMigrationName)]
+/// 显式命名替代 DeriveMigrationName（该 derive 固定产出 "migration"，
+/// 多个迁移会重名冲突）——依赖名与旧库（已应用 "m001_init"）保持一致
 pub struct M001Init;
+
+impl MigrationName for M001Init {
+    fn name(&self) -> &str {
+        "m001_init"
+    }
+}
 
 #[async_trait::async_trait]
 impl MigrationTrait for M001Init {
@@ -363,6 +370,62 @@ impl MigrationTrait for M001Init {
                 .execute_unprepared(&format!("DROP TABLE IF EXISTS {t}"))
                 .await?;
         }
+        Ok(())
+    }
+}
+
+/// 按 project_id 过滤的查询（整树加载/级联删除/后续搜索）补普通索引
+pub struct M002AddProjectIndices;
+
+impl MigrationName for M002AddProjectIndices {
+    fn name(&self) -> &str {
+        "m002_add_project_indices"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for M002AddProjectIndices {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_index(
+                Index::create()
+                    .if_not_exists()
+                    .name("idx_groups_project_id")
+                    .table(Groups::Table)
+                    .col(Groups::ProjectId)
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_index(
+                Index::create()
+                    .if_not_exists()
+                    .name("idx_interfaces_project_id")
+                    .table(Interfaces::Table)
+                    .col(Interfaces::ProjectId)
+                    .to_owned(),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_index(
+                Index::drop()
+                    .name("idx_groups_project_id")
+                    .table(Groups::Table)
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .drop_index(
+                Index::drop()
+                    .name("idx_interfaces_project_id")
+                    .table(Interfaces::Table)
+                    .to_owned(),
+            )
+            .await?;
         Ok(())
     }
 }

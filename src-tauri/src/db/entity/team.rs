@@ -6,7 +6,7 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i32,
     /// 唯一键（原目录名），重命名即更新此列
-    #[sea_orm(unique_key)]
+    #[sea_orm(unique)]
     pub key: String,
     pub name: String,
     pub description: String,

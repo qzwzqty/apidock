@@ -6,10 +6,9 @@ import { InterfaceEditor, type EditorMode } from "@/components/InterfaceEditor";
 import { ResponseView } from "@/components/ResponseView";
 import { EnvManager } from "@/components/EnvManager";
 import { ProjectSettingsDialog } from "@/components/ProjectSettingsDialog";
-import { RunReportDialog } from "@/components/RunReportDialog";
 import { ImportExportDialog } from "@/components/ImportExportDialog";
 import { MoveTargetDialog } from "@/components/MoveTargetDialog";
-import { api, type EnvironmentSummary, type RunReport, type SendOutcome } from "@/lib/api";
+import { api, type EnvironmentSummary, type SendOutcome } from "@/lib/api";
 import { useProject } from "@/lib/project";
 import { useWorkspace } from "@/lib/workspace";
 import { cn } from "@/lib/utils";
@@ -39,11 +38,6 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
   const [sendState, setSendState] = useState<
     { kind: "idle" } | { kind: "loading" } | { kind: "done"; outcome: SendOutcome }
   >({ kind: "idle" });
-  const [runState, setRunState] = useState<{ running: boolean; report: RunReport | null; open: boolean }>({
-    running: false,
-    report: null,
-    open: false,
-  });
   const [showImportExport, setShowImportExport] = useState(false);
   const [importExportMode, setImportExportMode] = useState<"import" | "export">("import");
   const [editorMode, setEditorMode] = useState<EditorMode>("doc");
@@ -93,12 +87,6 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
   const switchEnv = async (id: string) => {
     await api.setActiveEnvironment(teamKey, projectKey, id);
     setActiveEnv(id);
-  };
-
-  const run = async (groupPath: string[]) => {
-    setRunState({ running: true, report: null, open: true });
-    const report = await api.runInterfaces(teamKey, projectKey, groupPath);
-    setRunState({ running: false, report, open: true });
   };
 
   /** 复制接口（同分组，名称后接 -copy） */
@@ -198,7 +186,6 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
                   void deleteInterface(tabId, teamKey, projectKey, ref.groupPath, ref.key);
                 }
               }}
-              onRunGroup={(groupPath) => void run(groupPath)}
               onMoveIface={(ref) => setDlg({ kind: "moveIface", ref, exclude: ref.groupPath })}
               onMoveGroup={(ref) => setDlg({ kind: "moveGroup", ref, exclude: ref.groupPath })}
               onExportIface={(ref) => void exportIface(ref)}
@@ -391,12 +378,6 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
         projectKey={projectKey}
         open={showSettings}
         onClose={() => setShowSettings(false)}
-      />
-      <RunReportDialog
-        open={runState.open}
-        running={runState.running}
-        report={runState.report}
-        onClose={() => setRunState((s) => ({ ...s, open: false }))}
       />
       <ImportExportDialog
         teamKey={teamKey}

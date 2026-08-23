@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, ChevronRight, FolderPlus, FilePlus2, Pencil, Trash2, Folder, Play, MoveRight, MoreVertical, Download, Copy } from "lucide-react";
+import { ChevronDown, ChevronRight, FolderPlus, FilePlus2, Pencil, Trash2, Folder, MoveRight, MoreVertical, Download, Copy } from "lucide-react";
 import type { TreeNode } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -21,7 +21,6 @@ export function InterfaceTree({
   onCreateIface,
   onRenameIface,
   onDeleteIface,
-  onRunGroup,
   onMoveIface,
   onMoveGroup,
   onExportIface,
@@ -36,7 +35,6 @@ export function InterfaceTree({
   onCreateIface: (groupPath: string[]) => void;
   onRenameIface: (ref: IfaceRef) => void;
   onDeleteIface: (ref: IfaceRef) => void;
-  onRunGroup?: (groupPath: string[]) => void;
   onMoveIface?: (ref: IfaceRef) => void;
   onMoveGroup?: (ref: IfaceRef) => void;
   onExportIface?: (ref: IfaceRef) => void;
@@ -63,7 +61,6 @@ export function InterfaceTree({
           onCreateIface={onCreateIface}
           onRenameIface={onRenameIface}
           onDeleteIface={onDeleteIface}
-          onRunGroup={onRunGroup}
           onMoveIface={onMoveIface}
           onMoveGroup={onMoveGroup}
           onExportIface={onExportIface}
@@ -86,7 +83,6 @@ function Node({
   onCreateIface,
   onRenameIface,
   onDeleteIface,
-  onRunGroup,
   onMoveIface,
   onMoveGroup,
   onExportIface,
@@ -103,7 +99,6 @@ function Node({
   onCreateIface: (groupPath: string[]) => void;
   onRenameIface: (ref: IfaceRef) => void;
   onDeleteIface: (ref: IfaceRef) => void;
-  onRunGroup?: (groupPath: string[]) => void;
   onMoveIface?: (ref: IfaceRef) => void;
   onMoveGroup?: (ref: IfaceRef) => void;
   onExportIface?: (ref: IfaceRef) => void;
@@ -203,9 +198,6 @@ function Node({
           <div className="absolute right-1 top-7 z-50 w-40 overflow-hidden rounded-md border border-border bg-muted shadow-xl">
             <MenuItem icon={<FilePlus2 className="h-3.5 w-3.5" />} label="新建接口" onClick={() => { setMenuOpen(false); onCreateIface([...path, node.key]); }} />
             <MenuItem icon={<FolderPlus className="h-3.5 w-3.5" />} label="新建分组" onClick={() => { setMenuOpen(false); onCreateGroup([...path, node.key]); }} />
-            {onRunGroup && (
-              <MenuItem icon={<Play className="h-3.5 w-3.5" />} label="运行全部" onClick={() => { setMenuOpen(false); onRunGroup([...path, node.key]); }} />
-            )}
             <MenuItem icon={<Pencil className="h-3.5 w-3.5" />} label="编辑" onClick={() => { setMenuOpen(false); onRenameGroup({ groupPath: [...path, node.key], key: node.key }); }} />
             {onMoveGroup && (
               <MenuItem icon={<MoveRight className="h-3.5 w-3.5" />} label="移动" onClick={() => { setMenuOpen(false); onMoveGroup({ groupPath: [...path, node.key], key: node.key }); }} />
@@ -231,7 +223,6 @@ function Node({
               onCreateIface={onCreateIface}
               onRenameIface={onRenameIface}
               onDeleteIface={onDeleteIface}
-              onRunGroup={onRunGroup}
               onMoveIface={onMoveIface}
               onMoveGroup={onMoveGroup}
               onExportIface={onExportIface}

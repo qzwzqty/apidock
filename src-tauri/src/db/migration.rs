@@ -76,13 +76,14 @@ enum Environments {
     Variables,
 }
 
-/// 显式命名替代 DeriveMigrationName（该 derive 固定产出 "migration"，
-/// 多个迁移会重名冲突）——依赖名与旧库（已应用 "m001_init"）保持一致
+/// 版本名固定为历史遗留值 "migration"（旧版 DeriveMigrationName 的产物）。
+/// 已建库的 seaql_migrations 里记录的就是它，改其他名会被误判为"缺失迁移"而拒绝启动；
+/// 新库同样以此名记录。后续新增迁移一律手动实现 MigrationName 并使用唯一名。
 pub struct M001Init;
 
 impl MigrationName for M001Init {
     fn name(&self) -> &str {
-        "m001_init"
+        "migration"
     }
 }
 

@@ -391,8 +391,9 @@ export const api = {
   getRequestHistory: (id: number) => invoke<HistoryRecord>("get_request_history", { id }),
   deleteRequestHistory: (id: number) => invoke<void>("delete_request_history", { id }),
   clearRequestHistory: () => invoke<void>("clear_request_history"),
-  /** 按历史快照重发请求（记为新历史），返回新记录 */
-  resendHistory: (id: number) => invoke<HistoryRecord>("resend_history", { id }),
+  /** 按历史快照重发请求（可传入编辑后的接口定义；记为新历史），返回新记录 */
+  resendHistory: (id: number, iface?: InterfaceFile) =>
+    invoke<HistoryRecord>("resend_history", { id, iface: iface ?? null }),
 
   runInterfaces: (teamKey: string, projectKey: string, groupPath: string[]) =>
     invoke<RunReport>("run_interfaces", { teamKey, projectKey, groupPath }),

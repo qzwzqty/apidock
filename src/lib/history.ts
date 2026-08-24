@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, type HistoryRecord, type HistorySummary } from "./api";
+import { api, type HistoryRecord, type HistorySummary, type InterfaceFile } from "./api";
 
 function summaryOf(rec: HistoryRecord): HistorySummary {
   const { doc: _doc, env: _env, globalVariables: _gv, globalParams: _gp, response: _res, error: _err, ...rest } = rec;
@@ -18,7 +18,8 @@ interface HistoryStore {
 
   load: () => Promise<void>;
   select: (id: number) => Promise<void>;
-  resend: (id: number) => Promise<void>;
+  /** 按当前（可编辑）内容重发，记为新的一条历史 */
+  resend: (id: number, iface?: InterfaceFile) => Promise<void>;
   remove: (id: number) => Promise<void>;
   clear: () => Promise<void>;
 }
@@ -64,11 +65,11 @@ export const useHistory = create<HistoryStore>()((set, get) => ({
     }
   },
 
-  resend: async (id) => {
+  resend: async (id, iface) => {
     set({ resending: true });
     try {
-      // 后端按快照重发并记为新历史
-      const rec = await api.resendHistory(id);
+      // 后端按快照（+编辑后的接口定义）重发并记为新历史
+      const rec = await api.resendHistory(id, iface);
       const entries = [
         summaryOf(rec),
         ...get().entries.filter((e) => e.id !== rec.id),

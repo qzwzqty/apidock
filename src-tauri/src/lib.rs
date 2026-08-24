@@ -717,17 +717,23 @@ async fn clear_request_history(state: State<'_, AppState>) -> Result<(), String>
 
 /// 按历史快照重发请求：使用记录时的环境/全局变量快照（项目/环境被删后仍可重发），
 /// 并使用当前代理与会话；重发本身记为新的一条历史。
+/// `iface` 可传入前端编辑后的接口定义（重发用编辑后的文档，环境/全局变量仍用快照）。
 #[tauri::command]
-async fn resend_history(state: State<'_, AppState>, id: i64) -> Result<HistoryRecord, String> {
+async fn resend_history(
+    state: State<'_, AppState>,
+    id: i64,
+    iface: Option<InterfaceFile>,
+) -> Result<HistoryRecord, String> {
     let db = with_db(&state)?;
     let rec = repo::get_history(&db, id).await?;
+    let doc = iface.unwrap_or_else(|| rec.doc.clone());
     let opts = http::SendOptions {
         proxy: repo::get_workspace(&db).await.proxy,
         cookie_jar: Some(state.cookiejar.clone()),
         ..Default::default()
     };
     let result = http::send(
-        &rec.doc,
+        &doc,
         &rec.env,
         &rec.global_variables,
         &rec.global_params,
@@ -746,7 +752,7 @@ async fn resend_history(state: State<'_, AppState>, id: i64) -> Result<HistoryRe
         &rec.project_key,
         &settings,
         &rec.env,
-        &rec.doc,
+        &doc,
         Some(rec.iface_key.clone()),
         Some(rec.iface_name.clone()),
         &result,

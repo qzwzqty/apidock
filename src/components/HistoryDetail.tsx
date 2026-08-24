@@ -1,14 +1,200 @@
-import { Send, Loader2 } from "lucide-react";
-import type { ApiParam, Auth, HistoryRecord, InterfaceFile, SendOutcome } from "@/lib/api";
-import { isJsonBodyEmpty, jsonBodyToValue } from "@/lib/api";
-import { methodColor } from "@/lib/methods";
+import { useState } from "react";
+import { marked } from "marked";
+import { Send, Loader2, SlidersHorizontal, Eye, PencilLine } from "lucide-react";
+import type { ApiParam, Assertion, HistoryRecord, InterfaceFile, KeyValue, SendOutcome } from "@/lib/api";
+import { newBodyField } from "@/lib/api";
+import { METHODS } from "@/lib/methods";
 import { ResponseView } from "@/components/ResponseView";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { Input } from "@/components/ui/input";
+import {
+  ParamList,
+  BodyEditor,
+  AuthEditor,
+  KvList,
+  AssertionEditor,
+  SendOptionsDialog,
+  type Tab,
+} from "@/components/InterfaceEditor";
 
-function timeStr(ms: number): string {
-  const d = new Date(ms);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+/** 可编辑的请求面板：与接口管理-调试界面一致（方法/URL/参数/请求头/Body/鉴权/变量/断言/说明），
+ *  编辑结果仅用于「再次发送」，不落库。切换历史记录时整体重置（外层按 record.id 传 key）。 */
+function EditableRequest({
+  record,
+  resending,
+  onResend,
+}: {
+  record: HistoryRecord;
+  resending: boolean;
+  onResend: (doc: InterfaceFile) => void;
+}) {
+  const [doc, setDoc] = useState<InterfaceFile>({ ...record.doc });
+  const [tab, setTab] = useState<Tab>("params");
+  const [debugJson, setDebugJson] = useState<string | null>(null);
+  const [showOpts, setShowOpts] = useState(false);
+  const [preview, setPreview] = useState(false);
+
+  const update = (patch: Partial<InterfaceFile>) => setDoc((d) => ({ ...d, ...patch }));
+  const updateList = (field: "query" | "headers", list: ApiParam[]) =>
+    update({ [field]: list } as Partial<InterfaceFile>);
+  const updateKv = (field: "variables", list: KeyValue[]) =>
+    update({ [field]: list } as Partial<InterfaceFile>);
+  const updateAssertions = (list: Assertion[]) => update({ assertions: list });
+
+  /** 发送：JSON 模式按用户输入文本发送（清空结构树回落 content），与调试界面一致 */
+  const handleSend = () => {
+    if (doc.body.mode === "json" && debugJson != null) {
+      onResend({
+        ...doc,
+        body: { ...doc.body, json: { root: { ...newBodyField(""), type: "" } }, content: debugJson },
+      });
+    } else {
+      onResend(doc);
+    }
+  };
+
+  return (
+    <div className="flex h-full flex-col">
+      {/* 请求行：方法与地址可编辑 */}
+      <div className="flex shrink-0 items-center gap-2 px-3 py-2">
+        <select
+          className="h-9 min-w-20 cursor-pointer rounded-md border border-border bg-muted px-2 text-sm font-semibold text-accent outline-none focus:border-ring"
+          value={doc.method}
+          onChange={(e) => update({ method: e.target.value })}
+        >
+          {METHODS.map((m) => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+        </select>
+        <Input
+          className="h-9 flex-1"
+          placeholder="请求地址，如 {{host}}/api/login"
+          value={doc.url}
+          onChange={(e) => update({ url: e.target.value })}
+        />
+        <Button
+          variant="ghost"
+          title="发送选项（超时/重定向/TLS/CA）"
+          onClick={() => setShowOpts(true)}
+        >
+          <SlidersHorizontal className="h-4 w-4" />
+        </Button>
+        <Button
+          onClick={handleSend}
+          disabled={resending}
+          className="bg-green-600 hover:bg-green-500"
+          title="按当前内容重新发送（会记为新的一条历史）"
+        >
+          <Send className="h-4 w-4" /> {resending ? "发送中…" : "再次发送"}
+        </Button>
+      </div>
+
+      {/* 元信息行：接口/项目/环境/时间 */}
+      <div className="flex h-7 shrink-0 items-center gap-4 border-y border-border px-3 text-[11px] text-muted-foreground">
+        <span>
+          接口：<span className="text-foreground">{record.ifaceName || "（未知）"}</span>
+          {record.ifaceKey && <span className="text-muted-foreground/70">（{record.ifaceKey}）</span>}
+        </span>
+        <span>
+          项目：<span className="text-foreground">{record.projectName || record.projectKey}</span>
+        </span>
+        <span>
+          环境：<span className="text-foreground">{record.envName || record.envId}</span>
+          {record.env.host && <span className="font-mono text-muted-foreground/70">（{record.env.host}）</span>}
+        </span>
+        <span className="ml-auto shrink-0">
+          时间：{record.createdAtMs ? new Date(record.createdAtMs).toLocaleString("zh-CN", { hour12: false }) : ""}
+        </span>
+      </div>
+
+      {/* 区块标签（与调试界面一致） */}
+      <div className="flex h-9 shrink-0 items-center border-b border-border px-2 text-sm">
+        {(
+          [
+            ["params", "参数"],
+            ["headers", "请求头"],
+            ["body", "Body"],
+            ["auth", "鉴权"],
+            ["vars", "变量"],
+            ["assert", "断言"],
+            ["desc", "说明"],
+          ] as [Tab, string][]
+        ).map(([k, label]) => (
+          <button
+            key={k}
+            className={`h-full cursor-pointer border-r border-border px-3 transition-colors ${
+              tab === k ? "text-accent" : "text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => setTab(k)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        {tab === "params" && (
+          <ParamList
+            rows={doc.query}
+            onChange={(list) => updateList("query", list)}
+            placeholderK="参数名"
+            placeholderV="示例值"
+            showEnabled
+          />
+        )}
+        {tab === "headers" && (
+          <ParamList rows={doc.headers} onChange={(list) => updateList("headers", list)} showEnabled />
+        )}
+        {tab === "body" && (
+          <BodyEditor
+            key={doc.id}
+            body={doc.body}
+            onChange={(body) => update({ body })}
+            debugMode
+            debugJson={debugJson}
+            onDebugJsonChange={setDebugJson}
+          />
+        )}
+        {tab === "auth" && <AuthEditor auth={doc.auth} onChange={(auth) => update({ auth })} />}
+        {tab === "vars" && <KvList rows={doc.variables} onChange={(list) => updateKv("variables", list)} />}
+        {tab === "assert" && <AssertionEditor rows={doc.assertions} onChange={updateAssertions} />}
+        {tab === "desc" && (
+          <div>
+            <div className="mb-1 flex items-center justify-between">
+              <label className="text-xs text-muted-foreground">接口说明（支持 Markdown）</label>
+              <Button size="sm" variant="outline" onClick={() => setPreview(!preview)}>
+                {preview ? <PencilLine className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                {preview ? "编辑" : "预览"}
+              </Button>
+            </div>
+            {preview ? (
+              <div
+                className="markdown-body prose prose-sm max-w-none rounded-md border border-border bg-muted p-3 text-sm text-foreground"
+                dangerouslySetInnerHTML={{ __html: marked.parse(doc.description || "*暂无说明*") as string }}
+              />
+            ) : (
+              <textarea
+                className="h-40 w-full resize-y rounded-md border border-border bg-muted p-2.5 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring"
+                value={doc.description}
+                onChange={(e) => update({ description: e.target.value })}
+                placeholder="# 接口说明"
+              />
+            )}
+          </div>
+        )}
+      </div>
+
+      <SendOptionsDialog
+        iface={doc}
+        open={showOpts}
+        onClose={() => setShowOpts(false)}
+        onApply={(patch) => {
+          update(patch);
+          setShowOpts(false);
+        }}
+      />
+    </div>
+  );
 }
 
 export function HistoryDetail({
@@ -18,7 +204,7 @@ export function HistoryDetail({
 }: {
   record: HistoryRecord;
   resending: boolean;
-  onResend: () => void;
+  onResend: (doc: InterfaceFile) => void;
 }) {
   // 历史记录要么成功（response）要么失败（error）
   const outcome: SendOutcome =
@@ -31,37 +217,14 @@ export function HistoryDetail({
 
   return (
     <div className="flex h-full min-w-0">
-      {/* 左：请求详情（只读） */}
+      {/* 左：可编辑请求（与调试界面一致） */}
       <div className="flex w-3/5 min-w-0 flex-col border-r border-border">
-        {/* 请求行 */}
-        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
-          <span
-            className={cn(
-              "flex h-6 w-16 shrink-0 items-center justify-center rounded-md text-xs font-bold text-white",
-              methodColor(record.method),
-            )}
-          >
-            {record.method}
-          </span>
-          <span className="min-w-0 flex-1 truncate font-mono text-sm text-foreground" title={record.url}>
-            {record.url || "（无地址）"}
-          </span>
-          <span className="shrink-0 text-[11px] text-muted-foreground">
-            {record.createdAtMs ? new Date(record.createdAtMs).toLocaleString("zh-CN", { hour12: false }) : ""}
-          </span>
-          <Button
-            onClick={onResend}
-            disabled={resending}
-            className="bg-green-600 hover:bg-green-500"
-            title="按本次快照重新发送（会记为新的一条历史）"
-          >
-            <Send className="h-4 w-4" /> {resending ? "发送中…" : "再次发送"}
-          </Button>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-          <RequestReadonly record={record} time={timeStr(record.createdAtMs)} />
-        </div>
+        <EditableRequest
+          key={record.id}
+          record={record}
+          resending={resending}
+          onResend={onResend}
+        />
       </div>
 
       {/* 右：响应 */}
@@ -75,146 +238,4 @@ export function HistoryDetail({
       </div>
     </div>
   );
-}
-
-/** 只读请求内容：元信息 + 参数 / 请求头 / Body / 鉴权 */
-function RequestReadonly({ record, time }: { record: HistoryRecord; time: string }) {
-  const doc = record.doc;
-  return (
-    <div className="max-w-3xl space-y-4">
-      {/* 元信息 */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border bg-muted px-3 py-2 text-xs text-muted-foreground">
-        <span>
-          接口：<span className="text-foreground">{record.ifaceName || "（未知）"}</span>
-          {record.ifaceKey && <span className="text-muted-foreground/70">（{record.ifaceKey}）</span>}
-        </span>
-        <span>
-          项目：<span className="text-foreground">{record.projectName || record.projectKey}</span>
-        </span>
-        <span>
-          环境：<span className="text-foreground">{record.envName || record.envId}</span>
-          {record.env.host && <span className="font-mono text-muted-foreground/70">（{record.env.host}）</span>}
-        </span>
-        <span>时间：{time}</span>
-        {record.ok ? (
-          <span className="text-green-500">成功</span>
-        ) : (
-          <span className="text-red-400">失败</span>
-        )}
-      </div>
-
-      <Section title="查询参数" count={doc.query.length}>
-        {doc.query.length > 0 ? (
-          <ParamTable rows={doc.query} showType />
-        ) : (
-          <p className="text-xs text-muted-foreground">无查询参数。</p>
-        )}
-      </Section>
-
-      <Section title="请求头" count={doc.headers.length}>
-        {doc.headers.length > 0 ? (
-          <ParamTable rows={doc.headers} />
-        ) : (
-          <p className="text-xs text-muted-foreground">无请求头。</p>
-        )}
-      </Section>
-
-      <Section title="请求体">
-        <BodyText doc={doc} />
-      </Section>
-
-      <Section title="鉴权">
-        <p className="text-xs text-foreground">{authText(doc.auth)}</p>
-      </Section>
-    </div>
-  );
-}
-
-function Section({ title, count, children }: { title: string; count?: number; children: React.ReactNode }) {
-  return (
-    <section>
-      <h3 className="mb-1.5 flex items-center gap-2 text-xs font-semibold text-foreground">
-        {title}
-        {count != null && count > 0 && (
-          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">{count}</span>
-        )}
-      </h3>
-      {children}
-    </section>
-  );
-}
-
-function ParamTable({ rows, showType = false }: { rows: ApiParam[]; showType?: boolean }) {
-  return (
-    <table className="w-full border-collapse text-xs">
-      <thead>
-        <tr className="border-b border-border text-left text-[11px] text-muted-foreground">
-          <th className="py-1 pr-3 font-normal">参数名</th>
-          {showType && <th className="w-20 py-1 pr-3 font-normal">类型</th>}
-          <th className="w-12 py-1 pr-3 font-normal">必填</th>
-          <th className="py-1 pr-3 font-normal">示例值</th>
-          <th className="py-1 font-normal">说明</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((r, i) => (
-          <tr key={i} className={cn("border-b border-border/60", !r.enabled && "opacity-40")}>
-            <td className="py-1 pr-3 font-mono text-foreground">{r.key || "—"}</td>
-            {showType && <td className="w-20 py-1 pr-3 text-muted-foreground">{r.type || "string"}</td>}
-            <td className="w-12 py-1 pr-3 text-red-500">{r.required ? "*" : ""}</td>
-            <td className="py-1 pr-3 font-mono text-muted-foreground">{r.example || "—"}</td>
-            <td className="py-1 text-muted-foreground">{r.description || "—"}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-function BodyText({ doc }: { doc: InterfaceFile }) {
-  const body = doc.body;
-  switch (body.mode) {
-    case "json": {
-      const useTree = !isJsonBodyEmpty(body.json);
-      const text = useTree ? JSON.stringify(jsonBodyToValue(body.json), null, 2) : body.content;
-      return (
-        <pre className="overflow-auto rounded-md border border-border bg-muted p-2.5 font-mono text-xs text-foreground">
-          {text || "{}"}
-        </pre>
-      );
-    }
-    case "raw":
-      return (
-        <div>
-          <p className="mb-1 text-[11px] text-muted-foreground">Content-Type：{body.contentType || "text/plain"}</p>
-          <pre className="overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted p-2.5 font-mono text-xs text-foreground">
-            {body.content || "（空）"}
-          </pre>
-        </div>
-      );
-    case "urlencoded":
-    case "form-data":
-      return body.form.length > 0 ? (
-        <ParamTable rows={body.form} />
-      ) : (
-        <p className="text-xs text-muted-foreground">无表单字段。</p>
-      );
-    case "file":
-      return <p className="font-mono text-xs text-foreground">{body.filePath || "（未设置文件路径）"}</p>;
-    default:
-      return <p className="text-xs text-muted-foreground">无请求体。</p>;
-  }
-}
-
-function authText(a: Auth): string {
-  switch (a.kind) {
-    case "bearer":
-      return a.token ? `Bearer Token：${a.token}` : "Bearer Token（未设置 Token）";
-    case "basic":
-      return `Basic Auth：${a.username || "（未设置用户名）"} / ${a.password ? "••••••" : "（未设置密码）"}`;
-    case "api-key":
-      return `API Key：${a.apiKeyName || "（未设置）"} = ${a.apiKeyValue}（${a.apiKeyIn === "query" ? "查询参数" : "请求头"}）`;
-    default:
-      return "无鉴权";
-  }
 }

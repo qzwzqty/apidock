@@ -26,7 +26,7 @@ const BODY_MODES: [string, string][] = [
   ["file", "文件"],
 ];
 
-type Tab = "params" | "headers" | "body" | "auth" | "vars" | "assert" | "desc";
+export type Tab = "params" | "headers" | "body" | "auth" | "vars" | "assert" | "desc";
 
 /** 调试模式 JSON 初始文本：由文档结构树生成示例（树为空时回落旧 content） */
 function initialDebugJson(body: InterfaceFile["body"]): string {
@@ -307,7 +307,7 @@ export function InterfaceEditor({
   );
 }
 
-function KvList({
+export function KvList({
   rows,
   onChange,
   placeholderK = "Key",
@@ -360,7 +360,7 @@ function KvList({
 }
 
 /** 文档化参数表格：参数名 | 类型 | 必填 | 示例值 | 说明（Apifox 风格）；调试模式隐藏必填列、显示"参与发送"勾选 */
-function ParamList({
+export function ParamList({
   rows,
   onChange,
   placeholderK = "参数名",
@@ -459,7 +459,7 @@ function ParamList({
   );
 }
 
-function BodyEditor({
+export function BodyEditor({
   body,
   onChange,
   debugMode = false,
@@ -775,7 +775,7 @@ function JsonFieldRow({
   );
 }
 
-function AuthEditor({
+export function AuthEditor({
   auth,
   onChange,
 }: {
@@ -844,7 +844,7 @@ function AuthEditor({
     </div>
   );
 }
-function SendOptionsDialog({
+export function SendOptionsDialog({
   iface,
   open,
   onClose,
@@ -910,7 +910,7 @@ const OPS = [
   "eq", "ne", "contains", "not-contains", "gt", "ge", "lt", "le", "regex",
 ];
 
-function AssertionEditor({ rows, onChange }: { rows: Assertion[]; onChange: (rows: Assertion[]) => void }) {
+export function AssertionEditor({ rows, onChange }: { rows: Assertion[]; onChange: (rows: Assertion[]) => void }) {
   const set = (i: number, a: Assertion) => onChange(rows.map((r, j) => (j === i ? a : r)));
   return (
     <div className="space-y-2">

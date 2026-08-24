@@ -212,7 +212,7 @@ function HistoryDetailShell() {
     <HistoryDetail
       record={detail}
       resending={resending}
-      onResend={() => void resend(detail.id)}
+      onResend={(doc) => void resend(detail.id, doc)}
     />
   );
 }

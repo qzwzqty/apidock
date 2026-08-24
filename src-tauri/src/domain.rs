@@ -397,6 +397,11 @@ pub struct HistorySummary {
     pub env_name: String,
     pub iface_key: String,
     pub iface_name: String,
+    /// 引用主键（可空：对应团队/项目/分组/接口已删除或未知）
+    pub team_id: Option<i32>,
+    pub project_id: Option<i32>,
+    pub group_id: Option<i32>,
+    pub iface_id: Option<i32>,
     pub method: String,
     /// 实际发送的 URL（已解析变量；失败时回落接口原始 URL）
     pub url: String,
@@ -419,13 +424,17 @@ pub struct HistoryRecord {
     pub env_name: String,
     pub iface_key: String,
     pub iface_name: String,
+    pub team_id: Option<i32>,
+    pub project_id: Option<i32>,
+    pub group_id: Option<i32>,
+    pub iface_id: Option<i32>,
     pub method: String,
     pub url: String,
     pub status: Option<u16>,
     pub ok: bool,
     pub time_ms: u64,
     pub created_at_ms: i64,
-    /// 发送时的接口定义（完整请求，含 body/headers/query/auth）
+    /// 发送时的接口定义（完整请求，含 body/headers/query/auth；URL/参数等为解析后的实际值）
     pub doc: InterfaceFile,
     /// 发送时的环境快照
     pub env: EnvironmentFile,

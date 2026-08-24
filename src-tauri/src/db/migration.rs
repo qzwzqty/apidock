@@ -11,6 +11,7 @@ impl MigratorTrait for Migrator {
             Box::new(M001Init),
             Box::new(M002AddProjectIndices),
             Box::new(M003AddRequestHistory),
+            Box::new(M004AddHistoryRefs),
         ]
     }
 }
@@ -458,6 +459,10 @@ enum RequestHistory {
     GlobalParams,
     Response,
     Error,
+    TeamId,
+    ProjectId,
+    GroupId,
+    IfaceId,
 }
 
 /// 请求历史表：无外键（快照自包含），按时间倒序检索。
@@ -524,6 +529,74 @@ impl MigrationTrait for M003AddRequestHistory {
             .get_connection()
             .execute_unprepared("DROP TABLE IF EXISTS request_history")
             .await?;
+        Ok(())
+    }
+}
+
+/// 请求历史补充引用 id 列（团队/项目/分组/接口的数据库主键，可空）。
+/// 只是"外键 id"值，不建约束：删除团队/项目/接口后历史仍可查看与重发（快照自包含），
+/// 引用 id 仅用于前端跳转/关联展示。
+pub struct M004AddHistoryRefs;
+
+impl MigrationName for M004AddHistoryRefs {
+    fn name(&self) -> &str {
+        "m004_add_history_refs"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for M004AddHistoryRefs {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        for (col, iden) in [
+            (RequestHistory::TeamId, "team_id"),
+            (RequestHistory::ProjectId, "project_id"),
+            (RequestHistory::GroupId, "group_id"),
+            (RequestHistory::IfaceId, "iface_id"),
+        ] {
+            if !manager
+                .has_column("request_history", iden)
+                .await
+                .unwrap_or(false)
+            {
+                manager
+                    .alter_table(
+                        Table::alter()
+                            .table(RequestHistory::Table)
+                            .add_column(ColumnDef::new(col).integer().null())
+                            .to_owned(),
+                    )
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        for (col, _iden) in [
+            (RequestHistory::TeamId, "team_id"),
+            (RequestHistory::ProjectId, "project_id"),
+            (RequestHistory::GroupId, "group_id"),
+            (RequestHistory::IfaceId, "iface_id"),
+        ] {
+            match manager
+                .alter_table(
+                    Table::alter()
+                        .table(RequestHistory::Table)
+                        .drop_column(col)
+                        .to_owned(),
+                )
+                .await
+            {
+                Ok(_) => {}
+                Err(e) => {
+                    // 列不存在时忽略；其他错误如实返回
+                    let msg = e.to_string();
+                    if !msg.contains("no such column") && !msg.contains("duplicate column") {
+                        return Err(e);
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }

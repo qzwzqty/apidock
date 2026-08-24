@@ -565,6 +565,8 @@ fn to_json_str<T: serde::Serialize>(v: &T) -> Option<String> {
 
 /// 把一次发送（成功或失败）写入请求历史。失败是尽力而为（不阻断发送结果）。
 /// 返回新记录（供 resend_history 直接回传前端）。
+/// `iface` 应为已解析实际值的快照（resolve_iface 产物）：url 列即真实请求地址。
+#[allow(clippy::too_many_arguments)]
 async fn record_history(
     db: &sea_orm::DatabaseConnection,
     team_key: &str,
@@ -574,6 +576,7 @@ async fn record_history(
     iface: &InterfaceFile,
     iface_key: Option<String>,
     iface_name: Option<String>,
+    refs: repo::HistoryRefs,
     result: &Result<http::SendResponse, http::SendErrorInfo>,
 ) -> Option<HistoryRecord> {
     let input = match result {
@@ -595,6 +598,10 @@ async fn record_history(
             ok: true,
             time_ms: res.time_ms,
             created_at_ms: domain::now_unix_ms(),
+            team_id: refs.team_id,
+            project_id: refs.project_id,
+            group_id: refs.group_id,
+            iface_id: refs.iface_id,
             doc_json: to_json_str(iface).unwrap_or_default(),
             env_json: to_json_str(env).unwrap_or_default(),
             global_variables_json: to_json_str(&settings.global_variables).unwrap_or_default(),
@@ -616,6 +623,10 @@ async fn record_history(
             ok: false,
             time_ms: 0,
             created_at_ms: domain::now_unix_ms(),
+            team_id: refs.team_id,
+            project_id: refs.project_id,
+            group_id: refs.group_id,
+            iface_id: refs.iface_id,
             doc_json: to_json_str(iface).unwrap_or_default(),
             env_json: to_json_str(env).unwrap_or_default(),
             global_variables_json: to_json_str(&settings.global_variables).unwrap_or_default(),
@@ -642,6 +653,7 @@ async fn send_request(
     iface: InterfaceFile,
     iface_key: Option<String>,
     iface_name: Option<String>,
+    group_path: Option<Vec<String>>,
 ) -> Result<http::SendResponse, http::SendErrorInfo> {
     let db = state
         .db
@@ -664,8 +676,18 @@ async fn send_request(
         cookie_jar: Some(state.cookiejar.clone()),
         ..Default::default()
     };
+    // 历史快照记录"发送时的实际值"（变量全部展开）；发送本身语义不变（对已解析输入幂等）
+    let resolved = http::resolve_iface(&iface, &env, &settings.global_variables);
+    let refs = repo::resolve_history_refs(
+        &db,
+        &team_key,
+        &project_key,
+        &group_path.unwrap_or_default(),
+        iface_key.as_deref().unwrap_or_default(),
+    )
+    .await;
     let result = http::send(
-        &iface,
+        &resolved,
         &env,
         &settings.global_variables,
         &settings.global_params,
@@ -678,9 +700,10 @@ async fn send_request(
         &project_key,
         &settings,
         &env,
-        &iface,
+        &resolved,
         iface_key,
         iface_name,
+        refs,
         &result,
     )
     .await;
@@ -726,7 +749,11 @@ async fn resend_history(
 ) -> Result<HistoryRecord, String> {
     let db = with_db(&state)?;
     let rec = repo::get_history(&db, id).await?;
-    let doc = iface.unwrap_or_else(|| rec.doc.clone());
+    // 编辑后的文档需重新解析为实际值（用户可能改入 {{变量}}）；快照本身已是解析值，直接用
+    let doc = match iface {
+        Some(f) => http::resolve_iface(&f, &rec.env, &rec.global_variables),
+        None => rec.doc.clone(),
+    };
     let opts = http::SendOptions {
         proxy: repo::get_workspace(&db).await.proxy,
         cookie_jar: Some(state.cookiejar.clone()),
@@ -755,6 +782,12 @@ async fn resend_history(
         &doc,
         Some(rec.iface_key.clone()),
         Some(rec.iface_name.clone()),
+        repo::HistoryRefs {
+            team_id: rec.team_id,
+            project_id: rec.project_id,
+            group_id: rec.group_id,
+            iface_id: rec.iface_id,
+        },
         &result,
     )
     .await

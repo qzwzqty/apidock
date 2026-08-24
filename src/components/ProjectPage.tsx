@@ -88,6 +88,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
       doc,
       activeTabObj?.key,
       activeTabObj?.name,
+      activeTabObj?.groupPath,
     );
     setSendState({ kind: "done", outcome });
   };

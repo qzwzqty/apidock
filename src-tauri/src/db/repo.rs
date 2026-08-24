@@ -1101,12 +1101,109 @@ pub struct HistoryInput {
     pub ok: bool,
     pub time_ms: u64,
     pub created_at_ms: i64,
+    /// 引用主键（可空）
+    pub team_id: Option<i32>,
+    pub project_id: Option<i32>,
+    pub group_id: Option<i32>,
+    pub iface_id: Option<i32>,
     pub doc_json: String,
     pub env_json: String,
     pub global_variables_json: String,
     pub global_params_json: String,
     pub response_json: Option<String>,
     pub error_json: Option<String>,
+}
+
+/// 按 key 路径定位引用主键（团队 → 项目 → 分组 → 接口）。
+/// 从根分组（parent_id 为 NULL、key 为空）沿 group_path 逐级下钻；
+/// 任一级找不到即返回已定位部分（尽力而为，不阻断历史记录）。
+pub struct HistoryRefs {
+    pub team_id: Option<i32>,
+    pub project_id: Option<i32>,
+    pub group_id: Option<i32>,
+    pub iface_id: Option<i32>,
+}
+
+impl Default for HistoryRefs {
+    fn default() -> Self {
+        Self {
+            team_id: None,
+            project_id: None,
+            group_id: None,
+            iface_id: None,
+        }
+    }
+}
+
+pub async fn resolve_history_refs(
+    db: &DatabaseConnection,
+    team_key: &str,
+    project_key: &str,
+    group_path: &[String],
+    iface_key: &str,
+) -> HistoryRefs {
+    let team = match team::Entity::find()
+        .filter(team::Column::Key.eq(team_key))
+        .one(db)
+        .await
+    {
+        Ok(Some(t)) => t,
+        _ => return HistoryRefs::default(),
+    };
+    let mut refs = HistoryRefs { team_id: Some(team.id), ..Default::default() };
+    let project = match project::Entity::find()
+        .filter(project::Column::TeamId.eq(team.id))
+        .filter(project::Column::Key.eq(project_key))
+        .one(db)
+        .await
+    {
+        Ok(Some(p)) => p,
+        _ => return refs,
+    };
+    refs.project_id = Some(project.id);
+    let root = match group::Entity::find()
+        .filter(group::Column::ProjectId.eq(project.id))
+        .filter(group::Column::ParentId.is_null())
+        .one(db)
+        .await
+    {
+        Ok(Some(g)) => g,
+        _ => return refs,
+    };
+    let mut cur = root;
+    for seg in group_path {
+        if seg.is_empty() {
+            continue;
+        }
+        let Some(next) = group::Entity::find()
+            .filter(group::Column::ParentId.eq(cur.id))
+            .filter(group::Column::Key.eq(seg))
+            .one(db)
+            .await
+            .ok()
+            .flatten()
+        else {
+            return refs;
+        };
+        cur = next;
+    }
+    refs.group_id = Some(cur.id);
+    if iface_key.is_empty() {
+        return refs;
+    }
+    let Some(iface_row) = iface::Entity::find()
+        .filter(iface::Column::ProjectId.eq(project.id))
+        .filter(iface::Column::GroupId.eq(cur.id))
+        .filter(iface::Column::Key.eq(iface_key))
+        .one(db)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return refs;
+    };
+    refs.iface_id = Some(iface_row.id);
+    refs
 }
 
 pub async fn insert_history(
@@ -1127,6 +1224,10 @@ pub async fn insert_history(
         ok: Set(input.ok),
         time_ms: Set(input.time_ms as i64),
         created_at_ms: Set(input.created_at_ms),
+        team_id: Set(input.team_id),
+        project_id: Set(input.project_id),
+        group_id: Set(input.group_id),
+        iface_id: Set(input.iface_id),
         doc: Set(input.doc_json),
         env_json: Set(input.env_json),
         global_variables: Set(input.global_variables_json),
@@ -1163,6 +1264,10 @@ fn history_summary(m: &request_history::Model) -> HistorySummary {
         env_name: m.env_name.clone(),
         iface_key: m.iface_key.clone(),
         iface_name: m.iface_name.clone(),
+        team_id: m.team_id,
+        project_id: m.project_id,
+        group_id: m.group_id,
+        iface_id: m.iface_id,
         method: m.method.clone(),
         url: m.url.clone(),
         status: m.status.map(|s| s as u16),
@@ -1195,6 +1300,10 @@ pub fn history_record(m: &request_history::Model) -> HistoryRecord {
         env_name: m.env_name.clone(),
         iface_key: m.iface_key.clone(),
         iface_name: m.iface_name.clone(),
+        team_id: m.team_id,
+        project_id: m.project_id,
+        group_id: m.group_id,
+        iface_id: m.iface_id,
         method: m.method.clone(),
         url: m.url.clone(),
         status: m.status.map(|s| s as u16),

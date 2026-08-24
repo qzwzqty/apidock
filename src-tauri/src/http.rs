@@ -1,6 +1,7 @@
-use crate::domain::{EnvironmentFile, GlobalParams, InterfaceFile, KeyValue, ProxyConfig};
+use crate::domain::{BodyField, EnvironmentFile, GlobalParams, InterfaceFile, KeyValue, ProxyConfig};
 use crate::variables;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 const BODY_CAP: usize = 1_000_000;
@@ -54,14 +55,73 @@ fn err(kind: &str, message: impl Into<String>) -> SendErrorInfo {
     SendErrorInfo { kind: kind.into(), message: message.into() }
 }
 
+/// 生成"发送时实际值"的接口快照：对参与发送的全部字段做变量替换
+/// （URL / 查询参数 / 请求头 / Body 内容与表单 / 鉴权 / 文件路径）。json 结构树同步替换，
+/// 并回填载荷文本。历史记录保存此快照，重发/查看时呈现的就是当时的真实请求。
+/// 替换逻辑与 send() 内部一致（未定义变量保留原模板）。
+pub fn resolve_iface(
+    iface: &InterfaceFile,
+    env: &EnvironmentFile,
+    globals: &[KeyValue],
+) -> InterfaceFile {
+    let vars = variables::collect_vars(iface, env, globals);
+    let mut out = iface.clone();
+
+    out.url = variables::substitute(&out.url, &vars);
+    for p in &mut out.query {
+        p.key = variables::substitute(&p.key, &vars);
+        p.example = variables::substitute(&p.example, &vars);
+    }
+    for p in &mut out.headers {
+        p.key = variables::substitute(&p.key, &vars);
+        p.example = variables::substitute(&p.example, &vars);
+    }
+
+    if out.body.mode == "json" {
+        resolve_body_field(&mut out.body.json.root, &vars);
+        out.body.content = payload_of_body(&out.body);
+    } else {
+        out.body.content = variables::substitute(&out.body.content, &vars);
+    }
+    out.body.content_type = variables::substitute(&out.body.content_type, &vars);
+    for p in &mut out.body.form {
+        p.key = variables::substitute(&p.key, &vars);
+        p.example = variables::substitute(&p.example, &vars);
+    }
+    if let Some(fp) = &mut out.body.file_path {
+        *fp = variables::substitute(fp, &vars);
+    }
+
+    out.auth.token = variables::substitute(&out.auth.token, &vars);
+    out.auth.username = variables::substitute(&out.auth.username, &vars);
+    out.auth.password = variables::substitute(&out.auth.password, &vars);
+    out.auth.api_key_name = variables::substitute(&out.auth.api_key_name, &vars);
+    out.auth.api_key_value = variables::substitute(&out.auth.api_key_value, &vars);
+    out
+}
+
+fn resolve_body_field(f: &mut BodyField, vars: &BTreeMap<String, String>) {
+    f.example = variables::substitute(&f.example, &vars);
+    for c in &mut f.children {
+        resolve_body_field(c, vars);
+    }
+    if let Some(items) = &mut f.items {
+        resolve_body_field(items, vars);
+    }
+}
+
 /// json 模式下的载荷文本：结构树优先，为空回落旧 content
 fn payload_text(iface: &InterfaceFile) -> String {
-    if iface.body.mode == "json" {
-        if let Some(t) = iface.body.json_example_payload() {
+    payload_of_body(&iface.body)
+}
+
+fn payload_of_body(body: &crate::domain::Body) -> String {
+    if body.mode == "json" {
+        if let Some(t) = body.json_example_payload() {
             return t;
         }
     }
-    iface.body.content.clone()
+    body.content.clone()
 }
 
 pub async fn send(
@@ -506,5 +566,49 @@ mod tests {
         iface.url = "http://127.0.0.1:9/x".into();
         let err = send(&iface, &mock_env(), &[], &Default::default(), &SendOptions::default()).await.unwrap_err();
         assert_eq!(err.kind, "connect");
+    }
+
+    #[test]
+    fn resolve_iface_substitutes_actual_values() {
+        let mut iface: InterfaceFile = InterfaceFile::new("t");
+        iface.url = "{{host}}/api/{{id}}".into();
+        iface.variables = vec![
+            crate::domain::KeyValue { key: "id".into(), value: "u-42".into(), enabled: true },
+        ];
+        iface.query = vec![crate::domain::ApiParam {
+            key: "tag".into(),
+            example: "{{id}}".into(),
+            enabled: true,
+            ..Default::default()
+        }];
+        iface.headers = vec![crate::domain::ApiParam {
+            key: "X-Token".into(),
+            example: "{{tok}}".into(),
+            enabled: true,
+            ..Default::default()
+        }];
+        iface.auth.kind = "bearer".into();
+        iface.auth.token = "{{host}}/{{id}}".into();
+        let env = EnvironmentFile {
+            version: 1,
+            id: "env".into(),
+            file: "env".into(),
+            name: "e".into(),
+            host: "http://local:8080".into(),
+            builtin: false,
+            variables: vec![crate::domain::KeyValue { key: "tok".into(), value: "s3cret".into(), enabled: true }],
+        };
+        let globals = [crate::domain::KeyValue { key: "g".into(), value: "1".into(), enabled: true }];
+        let out = resolve_iface(&iface, &env, &globals);
+        assert_eq!(out.url, "http://local:8080/api/u-42");
+        assert_eq!(out.query[0].example, "u-42");
+        assert_eq!(out.headers[0].example, "s3cret");
+        assert_eq!(out.auth.token, "http://local:8080/u-42");
+        // 接口级变量留在 variables 中（定义本身即实际值，供重发收集）
+        assert_eq!(out.variables[0].value, "u-42");
+        // 未定义变量保留模板（host 来自环境则被替换；接口级变量 id 定义在 iface.variables 中被替换）
+        let mut no_def = iface.clone();
+        no_def.url = "{{host}}/api/{{nope}}".into();
+        assert_eq!(resolve_iface(&no_def, &mock_env(), &[]).url, "http://nope.invalid/api/{{nope}}");
     }
 }

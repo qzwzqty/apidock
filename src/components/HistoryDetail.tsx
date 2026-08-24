@@ -89,22 +89,34 @@ function EditableRequest({
         </Button>
       </div>
 
-      {/* 元信息行：接口/项目/环境/时间 */}
-      <div className="flex h-7 shrink-0 items-center gap-4 border-y border-border px-3 text-[11px] text-muted-foreground">
-        <span>
-          接口：<span className="text-foreground">{record.ifaceName || "（未知）"}</span>
-          {record.ifaceKey && <span className="text-muted-foreground/70">（{record.ifaceKey}）</span>}
-        </span>
-        <span>
-          项目：<span className="text-foreground">{record.projectName || record.projectKey}</span>
-        </span>
-        <span>
-          环境：<span className="text-foreground">{record.envName || record.envId}</span>
-          {record.env.host && <span className="font-mono text-muted-foreground/70">（{record.env.host}）</span>}
-        </span>
-        <span className="ml-auto shrink-0">
-          时间：{record.createdAtMs ? new Date(record.createdAtMs).toLocaleString("zh-CN", { hour12: false }) : ""}
-        </span>
+      {/* 元信息：第一行接口（可省略不换行），第二行项目 / 环境 / 时间 */}
+      <div className="shrink-0 border-y border-border px-3 py-1.5 text-xs">
+        <div className="flex min-w-0 items-baseline gap-2">
+          <span className="shrink-0 text-muted-foreground">接口：</span>
+          <span className="min-w-0 flex-1 truncate text-foreground" title={record.ifaceName || undefined}>
+            {record.ifaceName || "（未知）"}
+          </span>
+          {record.ifaceKey && record.ifaceKey !== record.ifaceName && (
+            <span className="shrink-0 font-mono text-[11px] text-muted-foreground/70">
+              （{record.ifaceKey}）
+            </span>
+          )}
+        </div>
+        <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-0.5 text-[11px] text-muted-foreground">
+          <span>
+            项目：<span className="text-foreground">{record.projectName || record.projectKey}</span>
+          </span>
+          <span>
+            环境：<span className="text-foreground">{record.envName || record.envId}</span>
+            {record.env.host && <span className="font-mono text-muted-foreground/70">（{record.env.host}）</span>}
+          </span>
+          <span>
+            时间：
+            {record.createdAtMs
+              ? new Date(record.createdAtMs).toLocaleString("zh-CN", { hour12: false })
+              : ""}
+          </span>
+        </div>
       </div>
 
       {/* 区块标签（与调试界面一致） */}

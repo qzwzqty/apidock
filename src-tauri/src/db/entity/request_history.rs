@@ -1,8 +1,8 @@
 use sea_orm::entity::prelude::*;
 
 /// 请求历史：每次发送的完整快照。
-/// 不挂外键——删除团队/项目后历史仍可查看与重发；doc/env/global_* 为发送时的快照，
-/// response/error 二选一（成功记 response，失败记 error）。
+/// 不挂外键约束——删除团队/项目后历史仍可查看与重发；doc/env/global_* 为发送时的快照，
+/// response/error 二选一（成功记 response，失败记 error）。*_id 为可空引用主键，仅用于关联展示。
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "request_history")]
 pub struct Model {
@@ -22,7 +22,12 @@ pub struct Model {
     pub time_ms: i64,
     /// Unix 毫秒时间戳
     pub created_at_ms: i64,
-    /// 发送时的完整接口定义（InterfaceFile JSON）
+    /// 引用主键（可空，不建约束）：0/null 表示对应对象已不存在或未知
+    pub team_id: Option<i32>,
+    pub project_id: Option<i32>,
+    pub group_id: Option<i32>,
+    pub iface_id: Option<i32>,
+    /// 发送时的完整接口定义（InterfaceFile JSON，已解析为实际值；初次记录后不可变）
     pub doc: String,
     /// 发送时的环境快照（EnvironmentFile JSON）
     pub env_json: String,

@@ -272,6 +272,11 @@ export interface HistorySummary {
   envName: string;
   ifaceKey: string;
   ifaceName: string;
+  /** 引用主键（对应团队/项目/分组/接口已删除或未知时为 null） */
+  teamId: number | null;
+  projectId: number | null;
+  groupId: number | null;
+  ifaceId: number | null;
   method: string;
   url: string;
   status: number | null;
@@ -371,6 +376,7 @@ export const api = {
     iface: InterfaceFile,
     ifaceKey?: string,
     ifaceName?: string,
+    groupPath?: string[],
   ): Promise<SendOutcome> => {
     try {
       const res = await invoke<SendResponse>("send_request", {
@@ -380,6 +386,7 @@ export const api = {
         iface,
         ifaceKey: ifaceKey ?? null,
         ifaceName: ifaceName ?? null,
+        groupPath: groupPath ?? [],
       });
       return { ok: true, res };
     } catch (e) {

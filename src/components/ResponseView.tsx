@@ -4,6 +4,14 @@ import type { SendOutcome } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
+/** 实际请求快照（历史记录展示用）：method/url/query/headers 均为发送时的最终形态 */
+export interface RequestSnapshot {
+  method: string;
+  url: string;
+  query?: { key: string; value: string }[];
+  headers?: { key: string; value: string }[];
+}
+
 function statusClass(status: number): string {
   if (status >= 200 && status < 300) return "text-green-500";
   if (status >= 400) return "text-red-400";
@@ -19,9 +27,15 @@ function bytes(n: number): string {
 export function ResponseView({
   outcome,
   onClear,
+  showClose = true,
+  request,
 }: {
   outcome: SendOutcome;
   onClear: () => void;
+  /** 关闭按钮（历史记录等无关闭语义的场景隐藏） */
+  showClose?: boolean;
+  /** 实际请求信息（历史记录详情展示） */
+  request?: RequestSnapshot | null;
 }) {
   const [pretty, setPretty] = useState(true);
   const [copied, setCopied] = useState(false);
@@ -29,7 +43,7 @@ export function ResponseView({
   if (!outcome.ok) {
     return (
       <div className="flex h-full flex-col">
-        <Header onClear={onClear} title="发送失败" />
+        <Header onClear={onClear} showClose={showClose} title="发送失败" />
         <div className="flex-1 overflow-y-auto px-4 py-3">
           <div className="mb-2 flex items-center gap-2">
             <span className="rounded bg-red-500/20 px-2 py-0.5 text-xs text-red-400">
@@ -64,6 +78,7 @@ export function ResponseView({
     <div className="flex h-full flex-col">
       <Header
         onClear={onClear}
+        showClose={showClose}
         title={
           <span className={cn("text-lg font-semibold", statusClass(res.status))}>
             {res.status} {res.statusText}
@@ -86,6 +101,7 @@ export function ResponseView({
         }
       />
       <div className="flex-1 overflow-y-auto px-4 py-3">
+        {request && <RequestBlock request={request} />}
         <p className="mb-2 break-all text-xs text-muted-foreground">{res.resolvedUrl}</p>
         <div className="mb-3">
           <h4 className="mb-1 text-xs font-medium text-muted-foreground">响应头（{res.headers.length}）</h4>
@@ -110,26 +126,67 @@ export function ResponseView({
   );
 }
 
+/** 实际请求快照：请求行 + 查询参数 + 请求头（发送时的最终形态） */
+function RequestBlock({ request }: { request: RequestSnapshot }) {
+  return (
+    <div className="mb-3 rounded-md border border-border bg-muted p-2.5">
+      <h4 className="mb-1.5 text-xs font-medium text-muted-foreground">实际请求</h4>
+      <div className="mb-1 font-mono text-xs text-foreground">
+        <span className="mr-2 rounded bg-orange-500/90 px-1.5 py-0.5 text-[10px] font-bold text-white">
+          {request.method}
+        </span>
+        <span className="break-all">{request.url}</span>
+      </div>
+      {request.query && request.query.length > 0 && (
+        <div className="mb-1">
+          <p className="text-[11px] text-muted-foreground">查询参数（{request.query.length}）</p>
+          {request.query.map((q, i) => (
+            <div key={i} className="flex gap-2 font-mono text-xs">
+              <span className="shrink-0 text-accent">{q.key}:</span>
+              <span className="break-all text-foreground">{q.value}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {request.headers && request.headers.length > 0 && (
+        <div>
+          <p className="text-[11px] text-muted-foreground">请求头（{request.headers.length}）</p>
+          {request.headers.map((h, i) => (
+            <div key={i} className="flex gap-2 font-mono text-xs">
+              <span className="shrink-0 text-accent">{h.key}:</span>
+              <span className="break-all text-foreground">{h.value}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Header({
   title,
   extra,
   onClear,
+  showClose = true,
 }: {
   title: React.ReactNode;
   extra?: React.ReactNode;
   onClear: () => void;
+  showClose?: boolean;
 }) {
   return (
     <div className="flex h-11 shrink-0 items-center gap-3 border-b border-border px-4">
       {title}
       {extra && <span className="ml-auto">{extra}</span>}
-      <button
-        className="ml-auto cursor-pointer rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-        onClick={onClear}
-        title="关闭响应面板"
-      >
-        <X className="h-4 w-4" />
-      </button>
+      {showClose && (
+        <button
+          className="ml-auto cursor-pointer rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          onClick={onClear}
+          title="关闭响应面板"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      )}
     </div>
   );
 }

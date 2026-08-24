@@ -77,6 +77,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
   const activeDoc = activeTabObj ? proj.docs[activeTabObj.id] : undefined;
   const showResponse = sendState.kind === "done" && editorMode === "debug";
   const activeEnvName = envs.find((e) => e.id === activeEnv)?.name ?? activeEnv;
+  const activeHost = envs.find((e) => e.id === activeEnv)?.host ?? "";
 
   const handleSend = async (doc: Parameters<typeof api.sendRequest>[3]) => {
     setSendState({ kind: "loading" });
@@ -275,6 +276,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
             {activeTabObj && activeDoc ? (
               <InterfaceEditor
                 doc={activeDoc}
+                host={activeHost}
                 onSave={(doc) => saveDoc(tabId, teamKey, projectKey, activeTabObj.groupPath, activeTabObj.key, doc)}
                 onSend={(doc) => void handleSend(doc)}
                 onModeChange={setEditorMode}

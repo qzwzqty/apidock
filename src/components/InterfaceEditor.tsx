@@ -4,6 +4,7 @@ import { Save, Send, Check, SlidersHorizontal, RotateCcw, Plus, Trash2, Eye, Pen
 import type { ApiParam, Assertion, BodyField, InterfaceFile, JsonBody, KeyValue } from "@/lib/api";
 import { isJsonBodyEmpty, newApiParam, newBodyField, jsonBodyToValue } from "@/lib/api";
 import { METHODS, methodColor } from "@/lib/methods";
+import { splitUrlPath, buildTemplateUrl, normalizeUrlForSend, HOST_TEMPLATE } from "@/lib/url";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogFooter } from "@/components/ui/dialog";
@@ -52,11 +53,14 @@ export function InterfaceEditor({
   onSave,
   onSend,
   onModeChange,
+  host = "",
 }: {
   doc: InterfaceFile;
   onSave: (doc: InterfaceFile) => Promise<void>;
   onSend: (doc: InterfaceFile) => void;
   onModeChange?: (mode: EditorMode) => void;
+  /** 当前激活环境 host（未配置时为空串：不发送并提示到环境管理中配置） */
+  host?: string;
 }) {
   const [base, setBase] = useState<InterfaceFile>({ ...doc });
   const [mode, setMode] = useState<EditorMode>("doc");
@@ -106,11 +110,16 @@ export function InterfaceEditor({
     }
   };
 
-  /** 发送：调试模式下 JSON 请求体按用户输入的原始文本发送（清空结构树让后端回落 content） */
+  /** 发送：URL 统一规范化为 {{host}}/路径（host 来自当前环境，接口文档存裸路径/模板均可）；
+   *  调试模式下 JSON 请求体按用户输入的原始文本发送（清空结构树让后端回落 content） */
   const handleSend = () => {
+    const sendDoc: InterfaceFile = {
+      ...base,
+      url: normalizeUrlForSend(base.url, host),
+    };
     if (mode === "debug" && base.body.mode === "json" && debugJson != null) {
       onSend({
-        ...base,
+        ...sendDoc,
         body: {
           ...base.body,
           json: { root: { ...newBodyField(""), type: "" } },
@@ -118,7 +127,7 @@ export function InterfaceEditor({
         },
       });
     } else {
-      onSend(base);
+      onSend(sendDoc);
     }
   };
 
@@ -160,12 +169,17 @@ export function InterfaceEditor({
           >
             {base.method}
           </span>
-          <span className="min-w-0 flex-1 truncate font-mono text-sm text-foreground">
-            {base.url || "（未设置请求地址）"}
+          <span className="min-w-0 flex-1 truncate font-mono text-sm text-foreground" title={base.url}>
+            {base.url ? base.url.replace(HOST_TEMPLATE, host.trim() || HOST_TEMPLATE) : "（未设置请求地址）"}
           </span>
           <Button variant="outline" onClick={() => switchMode("edit")}>
             <PencilLine className="h-4 w-4" /> 编辑
           </Button>
+          {!host.trim() && (
+            <span className="text-xs text-red-400" title="当前环境未配置 host，无法调试">
+              环境未配置 host
+            </span>
+          )}
           <Button onClick={() => switchMode("debug")}>调试</Button>
         </div>
       ) : (
@@ -179,11 +193,10 @@ export function InterfaceEditor({
               <option key={m} value={m}>{m}</option>
             ))}
           </select>
-          <Input
-            className="h-9 flex-1"
-            placeholder="请求地址，如 {{host}}/api/login"
-            value={base.url}
-            onChange={(e) => update({ url: e.target.value })}
+          <UrlInput
+            url={base.url}
+            host={host}
+            onChange={(url) => update({ url })}
           />
           {mode === "edit" && (
             <Button onClick={save} disabled={saving || (!dirty && !saved)} variant="outline">
@@ -200,7 +213,8 @@ export function InterfaceEditor({
             </Button>
           )}
           {mode === "debug" && (
-            <Button onClick={handleSend} className="bg-green-600 hover:bg-green-500">
+            <Button onClick={handleSend} disabled={!host} className="bg-green-600 hover:bg-green-500"
+              title={host ? undefined : "当前环境未配置 host，请在环境管理中设置后发送"}>
               <Send className="h-4 w-4" /> 发送
             </Button>
           )}
@@ -359,6 +373,48 @@ export function KvList({
   );
 }
 
+/** URL 输入：host 固定取自环境（只读前缀，不可编辑），用户只编辑路径部分 */
+export function UrlInput({
+  url,
+  host,
+  onChange,
+  placeholder = "/api/login",
+}: {
+  url: string;
+  host: string;
+  onChange: (url: string) => void;
+  placeholder?: string;
+}) {
+  const path = splitUrlPath(url, host);
+  const hostReady = host.trim().length > 0;
+  return (
+    <div className="flex h-9 min-w-0 flex-1 items-center overflow-hidden rounded-md border border-border bg-muted focus-within:border-ring">
+      {hostReady ? (
+        <span
+          className="max-w-[45%] shrink-0 select-none truncate border-r border-border px-2 py-1 font-mono text-xs text-muted-foreground"
+          title={host}
+        >
+          {host}
+        </span>
+      ) : (
+        <span
+          className="max-w-[45%] shrink-0 select-none truncate border-r border-border px-2 py-1 text-xs text-red-400"
+          title="当前环境未配置 host，请到环境管理中设置"
+        >
+          ⚠ 未配置 host
+        </span>
+      )}
+      <input
+        className="h-full min-w-0 flex-1 bg-transparent px-2 font-mono text-sm text-foreground outline-none placeholder:text-muted-foreground/60"
+        value={path}
+        placeholder={hostReady ? placeholder : "请先在环境管理配置 host"}
+        spellCheck={false}
+        onChange={(e) => onChange(buildTemplateUrl(e.target.value))}
+      />
+    </div>
+  );
+}
+
 /** 文档化参数表格：参数名 | 类型 | 必填 | 示例值 | 说明（Apifox 风格）；调试模式隐藏必填列、显示"参与发送"勾选 */
 export function ParamList({
   rows,
@@ -465,6 +521,7 @@ export function BodyEditor({
   debugMode = false,
   debugJson = null,
   onDebugJsonChange = () => {},
+  showAutoGenerate = true,
 }: {
   body: InterfaceFile["body"];
   onChange: (body: InterfaceFile["body"]) => void;
@@ -473,6 +530,8 @@ export function BodyEditor({
   /** 调试模式下用户手写的 JSON 文本（null = 未编辑，展示文档生成的初始值） */
   debugJson?: string | null;
   onDebugJsonChange?: (text: string) => void;
+  /** 调试模式 JSON 编辑框旁的「自动生成」按钮（历史记录等只读场景关闭） */
+  showAutoGenerate?: boolean;
 }) {
   const [preview, setPreview] = useState(false);
   /** 调试 JSON 文本：未编辑时由文档结构树（或旧 content）生成 */
@@ -520,9 +579,11 @@ export function BodyEditor({
             <span className="text-xs text-muted-foreground">
               请求体 JSON（直接发送该文本，支持 {"{{变量}}"}；修改仅在调试中生效，不影响文档）
             </span>
-            <Button size="sm" variant="outline" title="根据文档中定义的参数结构生成 JSON" onClick={autoGenerate}>
-              <Wand2 className="h-3.5 w-3.5" /> 自动生成
-            </Button>
+            {showAutoGenerate && (
+              <Button size="sm" variant="outline" title="根据文档中定义的参数结构生成 JSON" onClick={autoGenerate}>
+                <Wand2 className="h-3.5 w-3.5" /> 自动生成
+              </Button>
+            )}
           </div>
           <textarea
             className="h-72 w-full resize-y rounded-md border border-border bg-muted p-2.5 font-mono text-xs text-foreground outline-none focus:border-ring"

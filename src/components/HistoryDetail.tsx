@@ -1,12 +1,12 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { marked } from "marked";
-import { Send, Loader2, SlidersHorizontal, Eye, PencilLine } from "lucide-react";
+import { Send, Loader2, SlidersHorizontal } from "lucide-react";
 import type { ApiParam, Assertion, HistoryRecord, InterfaceFile, KeyValue, SendOutcome } from "@/lib/api";
 import { newBodyField } from "@/lib/api";
 import { METHODS } from "@/lib/methods";
-import { ResponseView } from "@/components/ResponseView";
+import { normalizeUrlForSend } from "@/lib/url";
+import { ResponseView, type RequestSnapshot } from "@/components/ResponseView";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   ParamList,
   BodyEditor,
@@ -14,6 +14,7 @@ import {
   KvList,
   AssertionEditor,
   SendOptionsDialog,
+  UrlInput,
   type Tab,
 } from "@/components/InterfaceEditor";
 
@@ -32,7 +33,6 @@ function EditableRequest({
   const [tab, setTab] = useState<Tab>("params");
   const [debugJson, setDebugJson] = useState<string | null>(null);
   const [showOpts, setShowOpts] = useState(false);
-  const [preview, setPreview] = useState(false);
 
   const update = (patch: Partial<InterfaceFile>) => setDoc((d) => ({ ...d, ...patch }));
   const updateList = (field: "query" | "headers", list: ApiParam[]) =>
@@ -41,21 +41,26 @@ function EditableRequest({
     update({ [field]: list } as Partial<InterfaceFile>);
   const updateAssertions = (list: Assertion[]) => update({ assertions: list });
 
-  /** 发送：JSON 模式按用户输入文本发送（清空结构树回落 content），与调试界面一致 */
+  /** 发送：URL 统一规范化为 {{host}}/路径（host 为记录时环境快照）；
+   *  JSON 模式按用户输入文本发送（清空结构树回落 content），与调试界面一致 */
   const handleSend = () => {
+    const sendDoc: InterfaceFile = {
+      ...doc,
+      url: normalizeUrlForSend(doc.url, record.env.host),
+    };
     if (doc.body.mode === "json" && debugJson != null) {
       onResend({
-        ...doc,
+        ...sendDoc,
         body: { ...doc.body, json: { root: { ...newBodyField(""), type: "" } }, content: debugJson },
       });
     } else {
-      onResend(doc);
+      onResend(sendDoc);
     }
   };
 
   return (
     <div className="flex h-full flex-col">
-      {/* 请求行：方法与地址可编辑 */}
+      {/* 请求行：方法与地址可编辑（host 固定为记录时环境快照，不可改） */}
       <div className="flex shrink-0 items-center gap-2 px-3 py-2">
         <select
           className="h-9 min-w-20 cursor-pointer rounded-md border border-border bg-muted px-2 text-sm font-semibold text-accent outline-none focus:border-ring"
@@ -66,11 +71,10 @@ function EditableRequest({
             <option key={m} value={m}>{m}</option>
           ))}
         </select>
-        <Input
-          className="h-9 flex-1"
-          placeholder="请求地址，如 {{host}}/api/login"
-          value={doc.url}
-          onChange={(e) => update({ url: e.target.value })}
+        <UrlInput
+          url={doc.url}
+          host={record.env.host}
+          onChange={(url) => update({ url })}
         />
         <Button
           variant="ghost"
@@ -81,9 +85,9 @@ function EditableRequest({
         </Button>
         <Button
           onClick={handleSend}
-          disabled={resending}
+          disabled={resending || !record.env.host.trim()}
           className="bg-green-600 hover:bg-green-500"
-          title="按当前内容重新发送（会记为新的一条历史）"
+          title={record.env.host.trim() ? "按当前内容重新发送（会记为新的一条历史）" : "该历史记录的环境未配置 host，无法重新发送"}
         >
           <Send className="h-4 w-4" /> {resending ? "发送中…" : "再次发送"}
         </Button>
@@ -165,32 +169,24 @@ function EditableRequest({
             debugMode
             debugJson={debugJson}
             onDebugJsonChange={setDebugJson}
+            showAutoGenerate={false}
           />
         )}
         {tab === "auth" && <AuthEditor auth={doc.auth} onChange={(auth) => update({ auth })} />}
         {tab === "vars" && <KvList rows={doc.variables} onChange={(list) => updateKv("variables", list)} />}
         {tab === "assert" && <AssertionEditor rows={doc.assertions} onChange={updateAssertions} />}
         {tab === "desc" && (
-          <div>
-            <div className="mb-1 flex items-center justify-between">
-              <label className="text-xs text-muted-foreground">接口说明（支持 Markdown）</label>
-              <Button size="sm" variant="outline" onClick={() => setPreview(!preview)}>
-                {preview ? <PencilLine className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                {preview ? "编辑" : "预览"}
-              </Button>
+          <div className="max-w-3xl">
+            <div className="mb-1.5">
+              <label className="text-xs text-muted-foreground">接口说明（只读预览）</label>
             </div>
-            {preview ? (
+            {doc.description.trim() ? (
               <div
                 className="markdown-body prose prose-sm max-w-none rounded-md border border-border bg-muted p-3 text-sm text-foreground"
-                dangerouslySetInnerHTML={{ __html: marked.parse(doc.description || "*暂无说明*") as string }}
+                dangerouslySetInnerHTML={{ __html: marked.parse(doc.description) as string }}
               />
             ) : (
-              <textarea
-                className="h-40 w-full resize-y rounded-md border border-border bg-muted p-2.5 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring"
-                value={doc.description}
-                onChange={(e) => update({ description: e.target.value })}
-                placeholder="# 接口说明"
-              />
+              <p className="text-xs text-muted-foreground">暂无说明。</p>
             )}
           </div>
         )}
@@ -227,6 +223,29 @@ export function HistoryDetail({
           err: record.error ?? { kind: "http", message: "无响应数据" },
         };
 
+  // 实际请求快照：发送时的最终形态（接口定义已解析实际值 + 全局参数注入）
+  const requestSnapshot: RequestSnapshot = useMemo(() => {
+    const doc = record.doc;
+    const query: { key: string; value: string }[] = [];
+    for (const kv of record.globalParams.query) {
+      if (kv.enabled && kv.key.trim()) query.push({ key: kv.key, value: kv.value });
+    }
+    for (const p of doc.query) {
+      if (p.enabled && p.key.trim()) query.push({ key: p.key, value: p.example });
+    }
+    const headers: { key: string; value: string }[] = [];
+    for (const kv of record.globalParams.headers) {
+      if (kv.enabled && kv.key.trim()) headers.push({ key: kv.key, value: kv.value });
+    }
+    for (const c of record.globalParams.cookies) {
+      if (c.enabled && c.key.trim()) headers.push({ key: "Cookie", value: `${c.key}=${c.value}` });
+    }
+    for (const p of doc.headers) {
+      if (p.enabled && p.key.trim()) headers.push({ key: p.key, value: p.example });
+    }
+    return { method: doc.method, url: record.url, query, headers };
+  }, [record]);
+
   return (
     <div className="flex h-full min-w-0">
       {/* 左：可编辑请求（与调试界面一致） */}
@@ -246,7 +265,12 @@ export function HistoryDetail({
             <Loader2 className="h-4 w-4 animate-spin" /> 发送中…
           </div>
         )}
-        <ResponseView outcome={outcome} onClear={() => {}} />
+        <ResponseView
+          outcome={outcome}
+          onClear={() => {}}
+          showClose={false}
+          request={requestSnapshot}
+        />
       </div>
     </div>
   );

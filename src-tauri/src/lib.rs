@@ -558,6 +558,42 @@ async fn save_project_settings(
 
 // ----- 发送请求 -----
 
+/// 环境 host 强制约束：
+/// - 当前环境未配置 host → 拒绝（不发请求、不记录历史）
+/// - 地址形态：`{{host}}` 模板 / 裸路径（如 /api/login，host 由环境注入）→ 放行；
+///   完整地址（http(s)://）→ 必须是旧数据且以当前环境 host 开头才放行。
+/// 校验基于未解析的原始模板，避免变量覆盖/解析差异导致的误判。
+fn validate_env_host(iface_url: &str, env: &EnvironmentFile) -> Result<(), http::SendErrorInfo> {
+    let host = env.host.trim().trim_end_matches('/');
+    if host.is_empty() {
+        return Err(http::SendErrorInfo {
+            kind: "host".into(),
+            message: "当前环境未配置 host，请先在环境管理中设置后再发送".into(),
+        });
+    }
+    let url = iface_url.trim();
+    if url.is_empty() {
+        return Err(http::SendErrorInfo {
+            kind: "host".into(),
+            message: "请求地址为空，请在地址栏填写路径（如 /api/login）".into(),
+        });
+    }
+    if url.starts_with("{{host}}") || url.starts_with("{host}") {
+        return Ok(());
+    }
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        // 裸路径：host 由当前环境注入
+        return Ok(());
+    }
+    if url.starts_with(&format!("{host}/")) || *url == *host {
+        return Ok(());
+    }
+    Err(http::SendErrorInfo {
+        kind: "host".into(),
+        message: format!("请求地址必须来自当前环境的 host（{host}）：请填写路径形式（如 /api/login），不允许直接填写完整地址"),
+    })
+}
+
 /// 把任意可序列化值转 JSON 文本（序列化失败返回 None；此处用于历史快照，尽力而为）
 fn to_json_str<T: serde::Serialize>(v: &T) -> Option<String> {
     serde_json::to_string(v).ok()
@@ -686,6 +722,11 @@ async fn send_request(
         iface_key.as_deref().unwrap_or_default(),
     )
     .await;
+    // 环境 host 强制约束：未配置 host 或地址不来自当前环境 → 不发送、不记录历史。
+    // 基于原始模板校验（{{host}} 开头即视为环境 host 注入）
+    if let Err(e) = validate_env_host(&iface.url, &env) {
+        return Err(e);
+    }
     let result = http::send(
         &resolved,
         &env,
@@ -749,6 +790,10 @@ async fn resend_history(
 ) -> Result<HistoryRecord, String> {
     let db = with_db(&state)?;
     let rec = repo::get_history(&db, id).await?;
+    // 环境 host 强制约束：未配置或地址不来自快照环境 → 不发送、不记录历史。
+    // 基于原始模板校验：编辑时 {{host}} 开头即通过；未编辑时快照 URL 已是解析值（以缓存环境 host 开头）
+    let tpl_url = iface.as_ref().map_or(&rec.doc.url, |f| &f.url);
+    validate_env_host(tpl_url, &rec.env).map_err(|e| e.message)?;
     // 编辑后的文档需重新解析为实际值（用户可能改入 {{变量}}）；快照本身已是解析值，直接用
     let doc = match iface {
         Some(f) => http::resolve_iface(&f, &rec.env, &rec.global_variables),

@@ -262,6 +262,35 @@ export interface SendErrorInfo {
 
 export type SendOutcome = { ok: true; res: SendResponse } | { ok: false; err: SendErrorInfo };
 
+/** 请求历史总结（列表用） */
+export interface HistorySummary {
+  id: number;
+  teamKey: string;
+  projectKey: string;
+  projectName: string;
+  envId: string;
+  envName: string;
+  ifaceKey: string;
+  ifaceName: string;
+  method: string;
+  url: string;
+  status: number | null;
+  ok: boolean;
+  timeMs: number;
+  /** Unix 毫秒时间戳 */
+  createdAtMs: number;
+}
+
+/** 请求历史完整记录：请求定义 + 环境/全局快照 + 响应/错误，可独立重发 */
+export interface HistoryRecord extends HistorySummary {
+  doc: InterfaceFile;
+  env: EnvironmentFile;
+  globalVariables: KeyValue[];
+  globalParams: GlobalParams;
+  response: SendResponse | null;
+  error: SendErrorInfo | null;
+}
+
 export interface InterfaceDoc {
   groupPath: string[];
   key: string;
@@ -340,14 +369,30 @@ export const api = {
     projectKey: string,
     envId: string,
     iface: InterfaceFile,
+    ifaceKey?: string,
+    ifaceName?: string,
   ): Promise<SendOutcome> => {
     try {
-      const res = await invoke<SendResponse>("send_request", { teamKey, projectKey, envId, iface });
+      const res = await invoke<SendResponse>("send_request", {
+        teamKey,
+        projectKey,
+        envId,
+        iface,
+        ifaceKey: ifaceKey ?? null,
+        ifaceName: ifaceName ?? null,
+      });
       return { ok: true, res };
     } catch (e) {
       return { ok: false, err: e as SendErrorInfo };
     }
   },
+
+  listRequestHistory: () => invoke<HistorySummary[]>("list_request_history"),
+  getRequestHistory: (id: number) => invoke<HistoryRecord>("get_request_history", { id }),
+  deleteRequestHistory: (id: number) => invoke<void>("delete_request_history", { id }),
+  clearRequestHistory: () => invoke<void>("clear_request_history"),
+  /** 按历史快照重发请求（记为新历史），返回新记录 */
+  resendHistory: (id: number) => invoke<HistoryRecord>("resend_history", { id }),
 
   runInterfaces: (teamKey: string, projectKey: string, groupPath: string[]) =>
     invoke<RunReport>("run_interfaces", { teamKey, projectKey, groupPath }),

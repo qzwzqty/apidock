@@ -8,8 +8,8 @@ mod variables;
 
 use db::repo;
 use domain::{
-    EnvironmentFile, InterfaceFile, ProjectInfo, ProjectSettings, TeamInfo, TreeNode,
-    WorkspaceState,
+    EnvironmentFile, HistoryRecord, HistorySummary, InterfaceFile, ProjectInfo, ProjectSettings,
+    TeamInfo, TreeNode, WorkspaceState,
 };
 use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
@@ -558,6 +558,81 @@ async fn save_project_settings(
 
 // ----- 发送请求 -----
 
+/// 把任意可序列化值转 JSON 文本（序列化失败返回 None；此处用于历史快照，尽力而为）
+fn to_json_str<T: serde::Serialize>(v: &T) -> Option<String> {
+    serde_json::to_string(v).ok()
+}
+
+/// 把一次发送（成功或失败）写入请求历史。失败是尽力而为（不阻断发送结果）。
+/// 返回新记录（供 resend_history 直接回传前端）。
+async fn record_history(
+    db: &sea_orm::DatabaseConnection,
+    team_key: &str,
+    project_key: &str,
+    settings: &ProjectSettings,
+    env: &EnvironmentFile,
+    iface: &InterfaceFile,
+    iface_key: Option<String>,
+    iface_name: Option<String>,
+    result: &Result<http::SendResponse, http::SendErrorInfo>,
+) -> Option<HistoryRecord> {
+    let input = match result {
+        Ok(res) => repo::HistoryInput {
+            team_key: team_key.into(),
+            project_key: project_key.into(),
+            project_name: settings.name.clone(),
+            env_id: env.id.clone(),
+            env_name: env.name.clone(),
+            iface_key: iface_key.unwrap_or_default(),
+            iface_name: iface_name.unwrap_or_else(|| iface.name.clone()),
+            method: iface.method.clone(),
+            url: if res.resolved_url.trim().is_empty() {
+                iface.url.clone()
+            } else {
+                res.resolved_url.clone()
+            },
+            status: Some(res.status),
+            ok: true,
+            time_ms: res.time_ms,
+            created_at_ms: domain::now_unix_ms(),
+            doc_json: to_json_str(iface).unwrap_or_default(),
+            env_json: to_json_str(env).unwrap_or_default(),
+            global_variables_json: to_json_str(&settings.global_variables).unwrap_or_default(),
+            global_params_json: to_json_str(&settings.global_params).unwrap_or_default(),
+            response_json: to_json_str(res),
+            error_json: None,
+        },
+        Err(err) => repo::HistoryInput {
+            team_key: team_key.into(),
+            project_key: project_key.into(),
+            project_name: settings.name.clone(),
+            env_id: env.id.clone(),
+            env_name: env.name.clone(),
+            iface_key: iface_key.unwrap_or_default(),
+            iface_name: iface_name.unwrap_or_else(|| iface.name.clone()),
+            method: iface.method.clone(),
+            url: iface.url.clone(),
+            status: None,
+            ok: false,
+            time_ms: 0,
+            created_at_ms: domain::now_unix_ms(),
+            doc_json: to_json_str(iface).unwrap_or_default(),
+            env_json: to_json_str(env).unwrap_or_default(),
+            global_variables_json: to_json_str(&settings.global_variables).unwrap_or_default(),
+            global_params_json: to_json_str(&settings.global_params).unwrap_or_default(),
+            response_json: None,
+            error_json: to_json_str(err),
+        },
+    };
+    match repo::insert_history(db, input).await {
+        Ok(model) => Some(repo::history_record(&model)),
+        Err(e) => {
+            eprintln!("记录请求历史失败：{e}");
+            None
+        }
+    }
+}
+
 #[tauri::command]
 async fn send_request(
     state: State<'_, AppState>,
@@ -565,6 +640,8 @@ async fn send_request(
     project_key: String,
     env_id: String,
     iface: InterfaceFile,
+    iface_key: Option<String>,
+    iface_name: Option<String>,
 ) -> Result<http::SendResponse, http::SendErrorInfo> {
     let db = state
         .db
@@ -587,14 +664,95 @@ async fn send_request(
         cookie_jar: Some(state.cookiejar.clone()),
         ..Default::default()
     };
-    http::send(
+    let result = http::send(
         &iface,
         &env,
         &settings.global_variables,
         &settings.global_params,
         &opts,
     )
+    .await;
+    record_history(
+        &db,
+        &team_key,
+        &project_key,
+        &settings,
+        &env,
+        &iface,
+        iface_key,
+        iface_name,
+        &result,
+    )
+    .await;
+    result
+}
+
+// ----- 请求历史 -----
+
+#[tauri::command]
+async fn list_request_history(
+    state: State<'_, AppState>,
+) -> Result<Vec<HistorySummary>, String> {
+    let db = with_db(&state)?;
+    Ok(repo::list_history(&db).await)
+}
+
+#[tauri::command]
+async fn get_request_history(state: State<'_, AppState>, id: i64) -> Result<HistoryRecord, String> {
+    let db = with_db(&state)?;
+    repo::get_history(&db, id).await
+}
+
+#[tauri::command]
+async fn delete_request_history(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::delete_history(&db, id).await
+}
+
+#[tauri::command]
+async fn clear_request_history(state: State<'_, AppState>) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::clear_history(&db).await
+}
+
+/// 按历史快照重发请求：使用记录时的环境/全局变量快照（项目/环境被删后仍可重发），
+/// 并使用当前代理与会话；重发本身记为新的一条历史。
+#[tauri::command]
+async fn resend_history(state: State<'_, AppState>, id: i64) -> Result<HistoryRecord, String> {
+    let db = with_db(&state)?;
+    let rec = repo::get_history(&db, id).await?;
+    let opts = http::SendOptions {
+        proxy: repo::get_workspace(&db).await.proxy,
+        cookie_jar: Some(state.cookiejar.clone()),
+        ..Default::default()
+    };
+    let result = http::send(
+        &rec.doc,
+        &rec.env,
+        &rec.global_variables,
+        &rec.global_params,
+        &opts,
+    )
+    .await;
+    let settings = ProjectSettings {
+        name: rec.project_name.clone(),
+        active_environment_id: Some(rec.env_id.clone()),
+        global_variables: rec.global_variables.clone(),
+        global_params: rec.global_params.clone(),
+    };
+    record_history(
+        &db,
+        &rec.team_key,
+        &rec.project_key,
+        &settings,
+        &rec.env,
+        &rec.doc,
+        Some(rec.iface_key.clone()),
+        Some(rec.iface_name.clone()),
+        &result,
+    )
     .await
+    .ok_or_else(|| "重发失败：未能写入历史".to_string())
 }
 
 #[tauri::command]
@@ -776,6 +934,11 @@ pub fn run() {
             get_project_settings,
             save_project_settings,
             send_request,
+            list_request_history,
+            get_request_history,
+            delete_request_history,
+            clear_request_history,
+            resend_history,
             run_interfaces,
             import_spec_into_project,
             import_spec_new_project,

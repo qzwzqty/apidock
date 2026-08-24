@@ -7,7 +7,11 @@ pub struct Migrator;
 
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(M001Init), Box::new(M002AddProjectIndices)]
+        vec![
+            Box::new(M001Init),
+            Box::new(M002AddProjectIndices),
+            Box::new(M003AddRequestHistory),
+        ]
     }
 }
 
@@ -426,6 +430,99 @@ impl MigrationTrait for M002AddProjectIndices {
                     .table(Interfaces::Table)
                     .to_owned(),
             )
+            .await?;
+        Ok(())
+    }
+}
+
+#[derive(Iden)]
+enum RequestHistory {
+    Table,
+    Id,
+    TeamKey,
+    ProjectKey,
+    ProjectName,
+    EnvId,
+    EnvName,
+    IfaceKey,
+    IfaceName,
+    Method,
+    Url,
+    Status,
+    Ok,
+    TimeMs,
+    CreatedAtMs,
+    Doc,
+    EnvJson,
+    GlobalVariables,
+    GlobalParams,
+    Response,
+    Error,
+}
+
+/// 请求历史表：无外键（快照自包含），按时间倒序检索。
+pub struct M003AddRequestHistory;
+
+impl MigrationName for M003AddRequestHistory {
+    fn name(&self) -> &str {
+        "m003_add_request_history"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for M003AddRequestHistory {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(RequestHistory::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(RequestHistory::Id)
+                            .big_integer()
+                            .not_null()
+                            .auto_increment()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(RequestHistory::TeamKey).string_len(255).not_null())
+                    .col(ColumnDef::new(RequestHistory::ProjectKey).string_len(255).not_null())
+                    .col(ColumnDef::new(RequestHistory::ProjectName).string_len(255).not_null().default(""))
+                    .col(ColumnDef::new(RequestHistory::EnvId).string_len(255).not_null().default(""))
+                    .col(ColumnDef::new(RequestHistory::EnvName).string_len(255).not_null().default(""))
+                    .col(ColumnDef::new(RequestHistory::IfaceKey).string_len(255).not_null().default(""))
+                    .col(ColumnDef::new(RequestHistory::IfaceName).string_len(255).not_null().default(""))
+                    .col(ColumnDef::new(RequestHistory::Method).string_len(16).not_null().default("GET"))
+                    .col(ColumnDef::new(RequestHistory::Url).text().not_null().default(""))
+                    .col(ColumnDef::new(RequestHistory::Status).integer())
+                    .col(ColumnDef::new(RequestHistory::Ok).boolean().not_null().default(false))
+                    .col(ColumnDef::new(RequestHistory::TimeMs).big_integer().not_null().default(0))
+                    .col(ColumnDef::new(RequestHistory::CreatedAtMs).big_integer().not_null())
+                    .col(ColumnDef::new(RequestHistory::Doc).text().not_null().default("{}"))
+                    .col(ColumnDef::new(RequestHistory::EnvJson).text().not_null().default("{}"))
+                    .col(ColumnDef::new(RequestHistory::GlobalVariables).text().not_null().default("[]"))
+                    .col(ColumnDef::new(RequestHistory::GlobalParams).text().not_null().default("{}"))
+                    .col(ColumnDef::new(RequestHistory::Response).text())
+                    .col(ColumnDef::new(RequestHistory::Error).text())
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_index(
+                Index::create()
+                    .if_not_exists()
+                    .name("idx_request_history_created_at")
+                    .table(RequestHistory::Table)
+                    .col(RequestHistory::CreatedAtMs)
+                    .to_owned(),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .get_connection()
+            .execute_unprepared("DROP TABLE IF EXISTS request_history")
             .await?;
         Ok(())
     }

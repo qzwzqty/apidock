@@ -1,6 +1,6 @@
 //! 仓储层：全部数据读写语义（对齐原 storage.rs 的行为与错误文案）
 
-use super::entity::{environment, group, iface, project, team, workspace};
+use super::entity::{environment, group, iface, project, request_history, team, workspace};
 use crate::domain::*;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
@@ -1081,6 +1081,162 @@ pub async fn set_active_environment(
     let mut am: project::ActiveModel = p.into();
     am.active_environment_id = Set(Some(env_id.to_string()));
     am.update(db).await.map_err(db_err)?;
+    Ok(())
+}
+
+// ----- 请求历史 -----
+
+/// 新增历史的全部字段（JSON 列由调用方序列化，保持仓储层为纯 SQL 语义）
+pub struct HistoryInput {
+    pub team_key: String,
+    pub project_key: String,
+    pub project_name: String,
+    pub env_id: String,
+    pub env_name: String,
+    pub iface_key: String,
+    pub iface_name: String,
+    pub method: String,
+    pub url: String,
+    pub status: Option<u16>,
+    pub ok: bool,
+    pub time_ms: u64,
+    pub created_at_ms: i64,
+    pub doc_json: String,
+    pub env_json: String,
+    pub global_variables_json: String,
+    pub global_params_json: String,
+    pub response_json: Option<String>,
+    pub error_json: Option<String>,
+}
+
+pub async fn insert_history(
+    db: &DatabaseConnection,
+    input: HistoryInput,
+) -> Result<request_history::Model, String> {
+    request_history::ActiveModel {
+        team_key: Set(input.team_key),
+        project_key: Set(input.project_key),
+        project_name: Set(input.project_name),
+        env_id: Set(input.env_id),
+        env_name: Set(input.env_name),
+        iface_key: Set(input.iface_key),
+        iface_name: Set(input.iface_name),
+        method: Set(input.method),
+        url: Set(input.url),
+        status: Set(input.status.map(|s| s as i32)),
+        ok: Set(input.ok),
+        time_ms: Set(input.time_ms as i64),
+        created_at_ms: Set(input.created_at_ms),
+        doc: Set(input.doc_json),
+        env_json: Set(input.env_json),
+        global_variables: Set(input.global_variables_json),
+        global_params: Set(input.global_params_json),
+        response: Set(input.response_json),
+        error: Set(input.error_json),
+        ..Default::default()
+    }
+    .insert(db)
+    .await
+    .map_err(db_err)
+}
+
+/// 列表：按时间倒序（同毫秒再按 id 倒序），仅返回总结
+pub async fn list_history(db: &DatabaseConnection) -> Vec<HistorySummary> {
+    let Ok(rows) = request_history::Entity::find()
+        .order_by_desc(request_history::Column::CreatedAtMs)
+        .order_by_desc(request_history::Column::Id)
+        .all(db)
+        .await
+    else {
+        return Vec::new();
+    };
+    rows.iter().map(history_summary).collect()
+}
+
+fn history_summary(m: &request_history::Model) -> HistorySummary {
+    HistorySummary {
+        id: m.id,
+        team_key: m.team_key.clone(),
+        project_key: m.project_key.clone(),
+        project_name: m.project_name.clone(),
+        env_id: m.env_id.clone(),
+        env_name: m.env_name.clone(),
+        iface_key: m.iface_key.clone(),
+        iface_name: m.iface_name.clone(),
+        method: m.method.clone(),
+        url: m.url.clone(),
+        status: m.status.map(|s| s as u16),
+        ok: m.ok,
+        time_ms: m.time_ms.max(0) as u64,
+        created_at_ms: m.created_at_ms,
+    }
+}
+
+pub async fn get_history(
+    db: &DatabaseConnection,
+    id: i64,
+) -> Result<HistoryRecord, String> {
+    let row = request_history::Entity::find_by_id(id)
+        .one(db)
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| format!("历史记录 {id} 不存在"))?;
+    Ok(history_record(&row))
+}
+
+/// 模型 → 完整记录（快照列宽容解析：损坏时回落空值，不阻塞查看/重发）
+pub fn history_record(m: &request_history::Model) -> HistoryRecord {
+    HistoryRecord {
+        id: m.id,
+        team_key: m.team_key.clone(),
+        project_key: m.project_key.clone(),
+        project_name: m.project_name.clone(),
+        env_id: m.env_id.clone(),
+        env_name: m.env_name.clone(),
+        iface_key: m.iface_key.clone(),
+        iface_name: m.iface_name.clone(),
+        method: m.method.clone(),
+        url: m.url.clone(),
+        status: m.status.map(|s| s as u16),
+        ok: m.ok,
+        time_ms: m.time_ms.max(0) as u64,
+        created_at_ms: m.created_at_ms,
+        doc: parse_json(&m.doc, InterfaceFile::new("")),
+        env: parse_json(&m.env_json, EnvironmentFile {
+            version: SCHEMA_VERSION,
+            id: String::new(),
+            file: String::new(),
+            name: String::new(),
+            host: String::new(),
+            builtin: false,
+            variables: Vec::new(),
+        }),
+        global_variables: parse_json(&m.global_variables, Vec::new()),
+        global_params: parse_json(&m.global_params, GlobalParams::default()),
+        response: m
+            .response
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok()),
+        error: m
+            .error
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok()),
+    }
+}
+
+pub async fn delete_history(db: &DatabaseConnection, id: i64) -> Result<(), String> {
+    request_history::Entity::delete_by_id(id)
+        .exec(db)
+        .await
+        .map_err(db_err)?;
+    Ok(())
+}
+
+pub async fn clear_history(db: &DatabaseConnection) -> Result<(), String> {
+    request_history::Entity::delete_many()
+        .exec(db)
+        .await
+        .map_err(db_err)?;
     Ok(())
 }
 

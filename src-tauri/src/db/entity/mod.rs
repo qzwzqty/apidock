@@ -4,5 +4,6 @@ pub mod environment;
 pub mod group;
 pub mod iface;
 pub mod project;
+pub mod request_history;
 pub mod team;
 pub mod workspace;

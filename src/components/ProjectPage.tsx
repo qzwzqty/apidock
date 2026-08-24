@@ -80,7 +80,15 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
 
   const handleSend = async (doc: Parameters<typeof api.sendRequest>[3]) => {
     setSendState({ kind: "loading" });
-    const outcome = await api.sendRequest(teamKey, projectKey, activeEnv, doc);
+    // 附带当前接口 key/name，供后端写入请求历史
+    const outcome = await api.sendRequest(
+      teamKey,
+      projectKey,
+      activeEnv,
+      doc,
+      activeTabObj?.key,
+      activeTabObj?.name,
+    );
     setSendState({ kind: "done", outcome });
   };
 

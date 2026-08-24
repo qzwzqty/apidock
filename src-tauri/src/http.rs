@@ -1,6 +1,6 @@
 use crate::domain::{EnvironmentFile, GlobalParams, InterfaceFile, KeyValue, ProxyConfig};
 use crate::variables;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
 const BODY_CAP: usize = 1_000_000;
@@ -30,7 +30,7 @@ impl Default for SendOptions {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendResponse {
     pub status: u16,
@@ -43,7 +43,7 @@ pub struct SendResponse {
     pub resolved_url: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendErrorInfo {
     pub kind: String,

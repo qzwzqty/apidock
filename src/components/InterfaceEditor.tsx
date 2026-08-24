@@ -3,24 +3,13 @@ import { marked } from "marked";
 import { Save, Send, Check, SlidersHorizontal, RotateCcw, Plus, Trash2, Eye, PencilLine, ChevronRight, ChevronDown, Wand2 } from "lucide-react";
 import type { ApiParam, Assertion, BodyField, InterfaceFile, JsonBody, KeyValue } from "@/lib/api";
 import { isJsonBodyEmpty, newApiParam, newBodyField, jsonBodyToValue } from "@/lib/api";
+import { METHODS, methodColor } from "@/lib/methods";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogFooter } from "@/components/ui/dialog";
 
-const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
-
 /** 视图模式：文档（只读）/ 编辑（可改）/ 调试（发请求） */
 export type EditorMode = "doc" | "edit" | "debug";
-
-const METHOD_COLORS: Record<string, string> = {
-  GET: "bg-emerald-600",
-  POST: "bg-orange-500",
-  PUT: "bg-blue-500",
-  PATCH: "bg-purple-500",
-  DELETE: "bg-red-500",
-  HEAD: "bg-slate-500",
-  OPTIONS: "bg-slate-500",
-};
 
 /** 参数类型（Params / Headers / 表单字段） */
 const PARAM_TYPES = ["string", "integer", "number", "boolean", "object", "array", "file"];
@@ -167,7 +156,7 @@ export function InterfaceEditor({
       {mode === "doc" ? (
         <div className="flex items-center gap-2 px-4 py-3">
           <span
-            className={`flex h-6 w-16 shrink-0 items-center justify-center rounded-md text-xs font-bold text-white ${METHOD_COLORS[base.method] ?? "bg-slate-500"}`}
+            className={`flex h-6 w-16 shrink-0 items-center justify-center rounded-md text-xs font-bold text-white ${methodColor(base.method)}`}
           >
             {base.method}
           </span>

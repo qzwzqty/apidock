@@ -421,3 +421,41 @@ export const api = {
   ) =>
     invoke<string[]>("export_interface_openapi_file", { path, teamKey, projectKey, groupPath, ifaceKey, yaml }),
 };
+
+/** 标签页配置数量（标题徽标用，与 InterfaceEditor 的 Tab 一一对应） */
+export type ConfigTab = "params" | "headers" | "body" | "auth" | "vars" | "assert" | "desc";
+
+/**
+ * 统计各区块「已配置」的数量：
+ * - params / headers / vars：非空 key 的行数
+ * - body：json / raw / file 视为整体 1 个（无内容为 0）；urlencoded / form-data 按字段行数；none 为 0
+ * - auth：非 none 视为 1
+ * - assert：断言条数；desc：说明非空视为 1
+ */
+export function configCounts(doc: InterfaceFile): Record<ConfigTab, number> {
+  const params = doc.query.filter((p) => p.key.trim()).length;
+  const headers = doc.headers.filter((p) => p.key.trim()).length;
+  let body = 0;
+  switch (doc.body.mode) {
+    case "json":
+      body = isJsonBodyEmpty(doc.body.json) && !doc.body.content.trim() ? 0 : 1;
+      break;
+    case "raw":
+      body = doc.body.content.trim() ? 1 : 0;
+      break;
+    case "urlencoded":
+    case "form-data":
+      body = doc.body.form.filter((p) => p.key.trim()).length;
+      break;
+    case "file":
+      body = doc.body.filePath?.trim() ? 1 : 0;
+      break;
+    default:
+      body = 0;
+  }
+  const auth = doc.auth.kind !== "none" ? 1 : 0;
+  const vars = doc.variables.filter((v) => v.key.trim()).length;
+  const assert = doc.assertions.length;
+  const desc = doc.description.trim() ? 1 : 0;
+  return { params, headers, body, auth, vars, assert, desc };
+}

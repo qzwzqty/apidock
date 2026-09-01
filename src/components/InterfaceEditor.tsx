@@ -1,8 +1,8 @@
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { marked } from "marked";
 import { Save, Send, Check, SlidersHorizontal, RotateCcw, Plus, Trash2, Eye, PencilLine, ChevronRight, ChevronDown, Wand2 } from "lucide-react";
 import type { ApiParam, Assertion, BodyField, InterfaceFile, JsonBody, KeyValue } from "@/lib/api";
-import { isJsonBodyEmpty, newApiParam, newBodyField, jsonBodyToValue } from "@/lib/api";
+import { isJsonBodyEmpty, newApiParam, newBodyField, jsonBodyToValue, configCounts } from "@/lib/api";
 import { METHODS, methodColor } from "@/lib/methods";
 import { splitUrlPath, buildTemplateUrl, normalizeUrlForSend, HOST_TEMPLATE } from "@/lib/url";
 import { Button } from "@/components/ui/button";
@@ -98,6 +98,7 @@ export function InterfaceEditor({
   const updateKv = (field: "variables", list: KeyValue[]) =>
     update({ [field]: list } as Partial<InterfaceFile>);
   const updateAssertions = (list: Assertion[]) => update({ assertions: list });
+  const counts = useMemo(() => configCounts(base), [base]);
 
   const save = async () => {
     setSaving(true);
@@ -231,30 +232,37 @@ export function InterfaceEditor({
         }}
       />
 
-      {/* 区块标签（编辑/调试模式） */}
-      <div className="flex h-9 shrink-0 items-center border-b border-border px-2 text-sm">
-        {(
-          [
-            ["params", "参数"],
-            ["headers", "请求头"],
-            ["body", "Body"],
-            ["auth", "鉴权"],
-            ["vars", "变量"],
-            ["assert", "断言"],
-            ["desc", "说明"],
-          ] as [Tab, string][]
-        ).map(([k, label]) => (
-          <button
-            key={k}
-            className={`h-full cursor-pointer border-r border-border px-3 transition-colors ${
-              tab === k ? "text-accent" : "text-muted-foreground hover:text-foreground"
-            }`}
-            onClick={() => setTab(k)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      {/* 区块标签（仅编辑/调试模式；文档界面不展示） */}
+      {mode !== "doc" && (
+        <div className="flex h-9 shrink-0 items-center border-b border-border px-2 text-sm">
+          {(
+            [
+              ["params", "参数"],
+              ["headers", "请求头"],
+              ["body", "Body"],
+              ["auth", "鉴权"],
+              ["vars", "变量"],
+              ["assert", "断言"],
+              ["desc", "说明"],
+            ] as [Tab, string][]
+          ).map(([k, label]) => (
+            <button
+              key={k}
+              className={`flex h-full cursor-pointer items-center gap-1.5 border-r border-border px-3 transition-colors ${
+                tab === k ? "text-accent" : "text-muted-foreground hover:text-foreground"
+              }`}
+              onClick={() => setTab(k)}
+            >
+              {label}
+              {counts[k] > 0 && (
+                <span className="rounded bg-accent/15 px-1 text-[10px] font-medium text-accent" title={`已配置 ${counts[k]} 项`}>
+                  {counts[k]}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
 
       {mode === "doc" ? (
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
@@ -930,7 +938,7 @@ export function SendOptionsDialog({
   };
 
   return (
-    <Dialog open={open} onClose={onClose} title="发送选项（保存后随接口生效）">
+    <Dialog open={open} onClose={onClose} title="发送选项（保存后随接口生效）" className="w-[520px]">
       <div className="space-y-3">
         <div className="grid grid-cols-2 gap-3">
           <div>

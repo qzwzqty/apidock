@@ -39,6 +39,12 @@
     font-size: 13px;
     user-select: none;
   }
+  /* 深色主题下原生下拉列表（select option）保持深色背景 */
+  select option,
+  select optgroup {
+    background-color: var(--muted);
+    color: var(--foreground);
+  }
 }
 
 /* 滚动条 */

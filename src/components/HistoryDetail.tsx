@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { marked } from "marked";
 import { Send, Loader2, SlidersHorizontal } from "lucide-react";
 import type { ApiParam, Assertion, HistoryRecord, InterfaceFile, KeyValue, SendOutcome } from "@/lib/api";
-import { newBodyField } from "@/lib/api";
+import { newBodyField, configCounts } from "@/lib/api";
 import { METHODS } from "@/lib/methods";
 import { normalizeUrlForSend } from "@/lib/url";
 import { ResponseView, type RequestSnapshot } from "@/components/ResponseView";
@@ -40,6 +40,7 @@ function EditableRequest({
   const updateKv = (field: "variables", list: KeyValue[]) =>
     update({ [field]: list } as Partial<InterfaceFile>);
   const updateAssertions = (list: Assertion[]) => update({ assertions: list });
+  const counts = useMemo(() => configCounts(doc), [doc]);
 
   /** 发送：URL 统一规范化为 {{host}}/路径（host 为记录时环境快照）；
    *  JSON 模式按用户输入文本发送（清空结构树回落 content），与调试界面一致 */
@@ -138,12 +139,17 @@ function EditableRequest({
         ).map(([k, label]) => (
           <button
             key={k}
-            className={`h-full cursor-pointer border-r border-border px-3 transition-colors ${
+            className={`flex h-full cursor-pointer items-center gap-1.5 border-r border-border px-3 transition-colors ${
               tab === k ? "text-accent" : "text-muted-foreground hover:text-foreground"
             }`}
             onClick={() => setTab(k)}
           >
             {label}
+            {counts[k] > 0 && (
+              <span className="rounded bg-accent/15 px-1 text-[10px] font-medium text-accent" title={`已配置 ${counts[k]} 项`}>
+                {counts[k]}
+              </span>
+            )}
           </button>
         ))}
       </div>

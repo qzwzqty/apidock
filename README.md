@@ -1,34 +1,69 @@
 # Apidock
 
-纯离线的 API 管理工具 —— 对标 Apifox / Apipost / Postman 的核心能力，用 **Rust** 构建，**本地文件 + 文件夹**即可管理一切，无需数据库、无需服务端、无需联网。
+纯离线的 API 管理工具 —— 对标 Apifox / Apipost / Postman 的核心能力，用 **Rust** 构建，数据全部保存在本地，无需账号、无需服务端、无需联网。
 
-## 快速开始
+## 功能
 
-> 目前已完成：M0 工程骨架、M1 接口树 CRUD、M2 接口测试（环境/变量/发送/响应）、断言与一键运行、OpenAPI/Postman 互操作、发送选项与代理、团队/项目重命名与移动、Markdown 说明、Cookie 会话、NSIS 打包。
+### 接口管理
+- 以 **团队 → 项目 → 分组 → 接口** 的树形结构组织 API 定义，分组支持多级嵌套。
+- 接口支持完整的请求定义：HTTP 方法、URL、请求头、查询参数、接口说明（Markdown）。
+- 请求体支持 6 种模式：`none`、`json`、`raw`、`urlencoded`、`form-data`、`file`。
+- **响应定义**：为接口声明返回的状态码（支持 `200` / `2XX` / `default`）、说明、Media Type 与 JSON 响应结构树。
 
-1. 阅读 [需求文档](docs/requirements.md) —— 功能和验收范围
-2. 阅读 [技术方案](docs/tech-plan.md) —— 技术栈与模块设计
-3. 阅读 [决策记录](docs/adr/) —— 关键选型及理由
-4. 词汇表见 [CONTEXT.md](CONTEXT.md)
-5. 开发运行：`npm install`，然后 `npm run tauri dev`
-6. 测试：`cargo test`（src-tauri 下，18 个单测 + HTTP 端到端 + 导入导出往返）
-7. 打包：`npm run tauri build` → `src-tauri/target/release/bundle/nsis/Apidock_x.x.x_x64-setup.exe`
+### 接口测试
+- 对任意接口执行**真实 HTTP 请求**，查看状态码、响应头、响应体（JSON 树形预览、原始/格式化切换、耗时与体积统计）。
+- 发送选项：超时时间、重定向策略、代理（无 / 系统 / 自定义）、TLS 校验开关与自定义 CA 证书。
+- 鉴权方案：`none`、Bearer Token、Basic、API Key、Digest。
+- 请求历史记录，随时回看历史请求与响应详情。
 
-## 仓库结构
+### 环境与变量
+- 项目级环境，默认内置**正式 / 测试 / 开发**三套，可删改并支持自定义。
+- `{{变量名}}` 模板替换，作用于 URL、请求头、请求体与鉴权字段。
+- 变量优先级：**接口级 > 项目全局变量 > 环境变量**。
+- 项目全局参数：向每个请求注入 Header / Cookie / Query / Body。
+
+### 断言与一键运行
+- 断言类型：状态码、JSONPath 取值比较、响应头取值比较。
+- 一键运行项目或分组下的全部接口，生成通过 / 失败汇总报告，失败接口一键跳转。
+
+### 导入 / 导出
+- 导入 OpenAPI 3.0 / 3.1（JSON / YAML）与 Postman Collection 2.x。
+- 以项目为单位导出 OpenAPI 3.0 / 3.1 文档（JSON / YAML）。
+
+### 离线优先
+- 数据存于本地 SQLite 数据库，单文件 `apidock.db`，复制即可备份 / 共享。
+- 无账号体系、无遥测、无自动更新、无任何网络请求。
+
+## 开发
+
+```bash
+npm install        # 安装前端依赖
+npm run tauri dev  # 开发运行
+cargo test         # 运行后端测试（src-tauri 下）
+```
+
+## 打包
+
+```bash
+npm run tauri build
+```
+
+生成 **NSIS 安装程序**：
 
 ```
-apidock/
-├── CONTEXT.md              # 领域词汇表
-├── docs/                   # 需求 / 技术方案 / 决策记录
-├── src/                    # 前端 React + Vite + TS（Tailwind + shadcn 风格组件）
-└── src-tauri/              # Rust core（storage 存储 / 标签状态 / 团队与项目命令）
+src-tauri/target/release/bundle/nsis/Apidock_x.x.x_x64-setup.exe
 ```
 
-## 设计要点（摘要）
+同时产出绿色版可执行文件 `src-tauri/target/release/apidock.exe`，可直接分发运行。
 
-- **组织结构**：数据根目录 → 模块（接口管理 `api-mgmt/`）→ 团队 → 项目 → 分组 → 接口；团队/项目/分组/接口以英文目录/文件名存储，中文显示名存元数据 `name` 字段。
-- **存储**：工作区 = 一个目录；集合/分组 = 文件夹，请求 = 单个 JSONC 文件（原子写 + 外部变更监听）。
-- **请求测试**：reqwest + rustls，支持超时/重定向/代理/TLS/自定义 CA；响应预览含 JSON 树。
-- **变量**：`{{var}}` 模板，优先级 接口级 > 项目全局 > 环境级。
-- **互操作**：导入/导出 OpenAPI 3.0/3.1（JSON/YAML），P1 支持 Postman Collection v2。
-- **离线**：无账号、无遥测、无自动更新；Windows WebView2 走离线分发方案。
+### 前提条件
+
+- Node.js + npm（前端构建）
+- Rust 工具链（cargo，后端编译）
+- 目标机器需有 **WebView2 Runtime**（Win10/11 一般已内置；缺失时安装包会引导下载）
+
+### 分发说明
+
+- 安装包**未签名**，首次运行时 SmartScreen 可能提示，选择「更多信息 → 仍要运行」即可。
+- 版本号在 `src-tauri/tauri.conf.json` 的 `version` 字段中修改，打包后同步到安装包文件名。
+- 如需完全离线的安装包（WebView2 缺失时不联网下载），可在 `tauri.conf.json` 的 `bundle.windows.webviewInstallMode` 中改为 `embedBootstrapper` 或 `offlineInstaller` 后重新打包。

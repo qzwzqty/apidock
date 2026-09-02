@@ -7,7 +7,12 @@ pub struct Migrator;
 
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(M001Init), Box::new(M002AddProjectIndices)]
+        vec![
+            Box::new(M001Init),
+            Box::new(M002AddProjectIndices),
+            Box::new(M003AddRequestHistory),
+            Box::new(M004AddHistoryRefs),
+        ]
     }
 }
 
@@ -427,6 +432,171 @@ impl MigrationTrait for M002AddProjectIndices {
                     .to_owned(),
             )
             .await?;
+        Ok(())
+    }
+}
+
+#[derive(Iden)]
+enum RequestHistory {
+    Table,
+    Id,
+    TeamKey,
+    ProjectKey,
+    ProjectName,
+    EnvId,
+    EnvName,
+    IfaceKey,
+    IfaceName,
+    Method,
+    Url,
+    Status,
+    Ok,
+    TimeMs,
+    CreatedAtMs,
+    Doc,
+    EnvJson,
+    GlobalVariables,
+    GlobalParams,
+    Response,
+    Error,
+    TeamId,
+    ProjectId,
+    GroupId,
+    IfaceId,
+}
+
+/// 请求历史表：无外键（快照自包含），按时间倒序检索。
+pub struct M003AddRequestHistory;
+
+impl MigrationName for M003AddRequestHistory {
+    fn name(&self) -> &str {
+        "m003_add_request_history"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for M003AddRequestHistory {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(RequestHistory::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(RequestHistory::Id)
+                            .big_integer()
+                            .not_null()
+                            .auto_increment()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(RequestHistory::TeamKey).string_len(255).not_null())
+                    .col(ColumnDef::new(RequestHistory::ProjectKey).string_len(255).not_null())
+                    .col(ColumnDef::new(RequestHistory::ProjectName).string_len(255).not_null().default(""))
+                    .col(ColumnDef::new(RequestHistory::EnvId).string_len(255).not_null().default(""))
+                    .col(ColumnDef::new(RequestHistory::EnvName).string_len(255).not_null().default(""))
+                    .col(ColumnDef::new(RequestHistory::IfaceKey).string_len(255).not_null().default(""))
+                    .col(ColumnDef::new(RequestHistory::IfaceName).string_len(255).not_null().default(""))
+                    .col(ColumnDef::new(RequestHistory::Method).string_len(16).not_null().default("GET"))
+                    .col(ColumnDef::new(RequestHistory::Url).text().not_null().default(""))
+                    .col(ColumnDef::new(RequestHistory::Status).integer())
+                    .col(ColumnDef::new(RequestHistory::Ok).boolean().not_null().default(false))
+                    .col(ColumnDef::new(RequestHistory::TimeMs).big_integer().not_null().default(0))
+                    .col(ColumnDef::new(RequestHistory::CreatedAtMs).big_integer().not_null())
+                    .col(ColumnDef::new(RequestHistory::Doc).text().not_null().default("{}"))
+                    .col(ColumnDef::new(RequestHistory::EnvJson).text().not_null().default("{}"))
+                    .col(ColumnDef::new(RequestHistory::GlobalVariables).text().not_null().default("[]"))
+                    .col(ColumnDef::new(RequestHistory::GlobalParams).text().not_null().default("{}"))
+                    .col(ColumnDef::new(RequestHistory::Response).text())
+                    .col(ColumnDef::new(RequestHistory::Error).text())
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_index(
+                Index::create()
+                    .if_not_exists()
+                    .name("idx_request_history_created_at")
+                    .table(RequestHistory::Table)
+                    .col(RequestHistory::CreatedAtMs)
+                    .to_owned(),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .get_connection()
+            .execute_unprepared("DROP TABLE IF EXISTS request_history")
+            .await?;
+        Ok(())
+    }
+}
+
+/// 请求历史补充引用 id 列（团队/项目/分组/接口的数据库主键，可空）。
+/// 只是"外键 id"值，不建约束：删除团队/项目/接口后历史仍可查看与重发（快照自包含），
+/// 引用 id 仅用于前端跳转/关联展示。
+pub struct M004AddHistoryRefs;
+
+impl MigrationName for M004AddHistoryRefs {
+    fn name(&self) -> &str {
+        "m004_add_history_refs"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for M004AddHistoryRefs {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        for (col, iden) in [
+            (RequestHistory::TeamId, "team_id"),
+            (RequestHistory::ProjectId, "project_id"),
+            (RequestHistory::GroupId, "group_id"),
+            (RequestHistory::IfaceId, "iface_id"),
+        ] {
+            if !manager
+                .has_column("request_history", iden)
+                .await
+                .unwrap_or(false)
+            {
+                manager
+                    .alter_table(
+                        Table::alter()
+                            .table(RequestHistory::Table)
+                            .add_column(ColumnDef::new(col).integer().null())
+                            .to_owned(),
+                    )
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        for (col, _iden) in [
+            (RequestHistory::TeamId, "team_id"),
+            (RequestHistory::ProjectId, "project_id"),
+            (RequestHistory::GroupId, "group_id"),
+            (RequestHistory::IfaceId, "iface_id"),
+        ] {
+            match manager
+                .alter_table(
+                    Table::alter()
+                        .table(RequestHistory::Table)
+                        .drop_column(col)
+                        .to_owned(),
+                )
+                .await
+            {
+                Ok(_) => {}
+                Err(e) => {
+                    // 列不存在时忽略；其他错误如实返回
+                    let msg = e.to_string();
+                    if !msg.contains("no such column") && !msg.contains("duplicate column") {
+                        return Err(e);
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }

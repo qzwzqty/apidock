@@ -18,10 +18,12 @@ interface ProjState {
   openTabs: InterfaceTab[];
   activeTab: string | null;
   docs: Record<string, InterfaceFile>;
+  /** 新建接口后新开标签的期望初始模式（打开即进入编辑） */
+  openInEditId: string | null;
 }
 
 function emptyProj(): ProjState {
-  return { tree: [], loaded: false, openTabs: [], activeTab: null, docs: {} };
+  return { tree: [], loaded: false, openTabs: [], activeTab: null, docs: {}, openInEditId: null };
 }
 
 interface ProjectStore {
@@ -140,6 +142,12 @@ export const useProject = create<ProjectStore>()((set, get) => ({
     const created = await api.createInterface(teamKey, projectKey, groupPath, name, description);
     await get().loadTree(tabId, teamKey, projectKey);
     await get().openInterface(tabId, teamKey, projectKey, groupPath, created.key);
+    const id = ifaceId(groupPath, created.key);
+    set((s) => {
+      const st = s.states[tabId];
+      if (!st) return {};
+      return { states: { ...s.states, [tabId]: { ...st, openInEditId: id } } };
+    });
   },
 
   renameInterface: async (tabId, teamKey, projectKey, groupPath, key, name) => {

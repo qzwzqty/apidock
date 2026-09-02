@@ -113,7 +113,7 @@ export function MainWindow() {
               {filteredProjects.map((proj) => (
                 <div
                   key={proj.key}
-                  className="group relative flex cursor-pointer flex-col gap-1 rounded-lg border border-border bg-muted p-3.5 transition-colors hover:border-accent/60"
+                  className="group relative flex cursor-pointer select-none flex-col gap-1 rounded-lg border border-border bg-muted p-3.5 transition-colors hover:border-accent/60"
                   onClick={() => openProject(selectedTeam.key, proj.key)}
                 >
                   <div className="flex items-center gap-2">
@@ -233,7 +233,7 @@ function TeamRow({
   return (
     <div
       className={cn(
-        "group mb-0.5 flex items-center justify-between rounded-md px-2 py-1.5 text-sm cursor-pointer transition-colors",
+        "group mb-0.5 flex items-center justify-between rounded-md px-2 py-1.5 text-sm cursor-pointer select-none transition-colors",
         active
           ? "bg-accent text-accent-foreground"
           : "text-muted-foreground hover:bg-muted hover:text-foreground",

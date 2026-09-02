@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
-import { FolderPlus, FilePlus2, MoreVertical, Upload, Download, X, Settings2, ChevronDown, FileText, Loader2 } from "lucide-react";
+import { FolderPlus, FilePlus2, MoreVertical, Upload, Download, X, Settings2, FileText, Loader2 } from "lucide-react";
 import { InterfaceTree, PromptDialog, type IfaceRef } from "@/components/InterfaceTree";
 import { InterfaceEditor, type EditorMode } from "@/components/InterfaceEditor";
 import { ResponseView } from "@/components/ResponseView";
-import { EnvManager } from "@/components/EnvManager";
-import { ProjectSettingsDialog } from "@/components/ProjectSettingsDialog";
+import { EnvironmentDialog } from "@/components/EnvironmentDialog";
 import { ImportExportDialog } from "@/components/ImportExportDialog";
 import { MoveTargetDialog } from "@/components/MoveTargetDialog";
 import { api, type EnvironmentSummary, type SendOutcome } from "@/lib/api";
@@ -33,8 +32,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
   const [dlg, setDlg] = useState<DlgState>(null);
   const [envs, setEnvs] = useState<EnvironmentSummary[]>([]);
   const [activeEnv, setActiveEnv] = useState<string>("env-prod");
-  const [showEnvMgr, setShowEnvMgr] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
+  const [showEnvSettings, setShowEnvSettings] = useState(false);
   const [sendState, setSendState] = useState<
     { kind: "idle" } | { kind: "loading" } | { kind: "done"; outcome: SendOutcome }
   >({ kind: "idle" });
@@ -75,12 +73,33 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
 
   const activeTabObj = proj?.openTabs.find((t) => t.id === proj.activeTab);
   const activeDoc = activeTabObj ? proj.docs[activeTabObj.id] : undefined;
+  const openInEdit = !!proj?.openInEditId && proj.openInEditId === activeTabObj?.id;
   const showResponse = sendState.kind === "done" && editorMode === "debug";
   const activeEnvName = envs.find((e) => e.id === activeEnv)?.name ?? activeEnv;
+  const activeHost = envs.find((e) => e.id === activeEnv)?.host ?? "";
+
+  // 新建接口的标签已进入编辑态，清除一次性标记
+  useEffect(() => {
+    if (!openInEdit) return;
+    useProject.setState((s) => {
+      const st = s.states[tabId];
+      if (!st?.openInEditId) return {};
+      return { states: { ...s.states, [tabId]: { ...st, openInEditId: null } } };
+    });
+  }, [openInEdit, tabId]);
 
   const handleSend = async (doc: Parameters<typeof api.sendRequest>[3]) => {
     setSendState({ kind: "loading" });
-    const outcome = await api.sendRequest(teamKey, projectKey, activeEnv, doc);
+    // 附带当前接口 key/name，供后端写入请求历史
+    const outcome = await api.sendRequest(
+      teamKey,
+      projectKey,
+      activeEnv,
+      doc,
+      activeTabObj?.key,
+      activeTabObj?.name,
+      activeTabObj?.groupPath,
+    );
     setSendState({ kind: "done", outcome });
   };
 
@@ -130,7 +149,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
             {menuOpen && (
               <div className="absolute right-0 top-8 z-50 w-40 overflow-hidden rounded-md border border-border bg-muted shadow-xl">
                 <button
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer select-none"
                   onClick={() => {
                     setDlg({ kind: "createIface", groupPath: [] });
                     setMenuOpen(false);
@@ -139,7 +158,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
                   <FilePlus2 className="h-4 w-4" /> 新建接口
                 </button>
                 <button
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer select-none"
                   onClick={() => {
                     setDlg({ kind: "createGroup", parentPath: [] });
                     setMenuOpen(false);
@@ -149,13 +168,13 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
                 </button>
                 <div className="my-1 h-px bg-border" />
                 <button
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer select-none"
                   onClick={() => openImportExport("import")}
                 >
                   <Upload className="h-4 w-4" /> 导入
                 </button>
                 <button
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer select-none"
                   onClick={() => openImportExport("export")}
                 >
                   <Download className="h-4 w-4" /> 导出
@@ -197,30 +216,25 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
 
       {/* 右侧：接口定义 / 调试 */}
       <main className="flex min-w-0 flex-1 flex-col">
-        {/* 项目上下文行：项目定位 + 环境选择 + 项目设置 */}
-        <div className="flex h-9 shrink-0 items-center border-b border-border text-sm">
+        {/* 项目上下文行：项目定位 + 环境选择 + 环境设置 */}
+        <div className="flex h-9 shrink-0 items-center border-b border-border text-sm select-none">
           <span className="px-4 text-muted-foreground">{teamKey} / {projectKey}</span>
-          <button
-            className="ml-auto flex h-full cursor-pointer items-center gap-2 px-3 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            onClick={() => setShowEnvMgr(true)}
-            title="环境管理"
-          >
+          <div className="ml-auto flex h-full items-center pl-3">
             <select
-              className="cursor-pointer bg-transparent text-xs text-muted-foreground outline-none"
+              className="h-6 cursor-pointer rounded-md border border-border bg-muted px-2 text-xs text-muted-foreground outline-none focus:border-ring"
               value={activeEnv}
-              onClick={(e) => e.stopPropagation()}
+              title="切换环境"
               onChange={(e) => void switchEnv(e.target.value)}
             >
               {envs.map((e) => (
                 <option key={e.id} value={e.id}>{e.name}</option>
               ))}
             </select>
-            <ChevronDown className="h-3.5 w-3.5" />
-          </button>
+          </div>
           <button
             className="flex h-full cursor-pointer items-center px-3 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            onClick={() => setShowSettings(true)}
-            title="项目设置（全局变量/全局参数）"
+            onClick={() => setShowEnvSettings(true)}
+            title="环境设置（环境 / 全局变量 / 全局参数）"
           >
             <Settings2 className="h-3.5 w-3.5" />
           </button>
@@ -232,7 +246,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
             <div
               key={tab.id}
               className={cn(
-                "group relative flex max-w-[200px] cursor-pointer items-center gap-1 border-r border-border px-3",
+                "group relative flex max-w-[200px] cursor-pointer items-center gap-1 border-r border-border px-3 select-none",
                 proj.activeTab === tab.id ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted",
               )}
               onClick={() => setActive(tabId, tab.id)}
@@ -266,6 +280,8 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
             {activeTabObj && activeDoc ? (
               <InterfaceEditor
                 doc={activeDoc}
+                host={activeHost}
+                defaultMode={openInEdit ? "edit" : undefined}
                 onSave={(doc) => saveDoc(tabId, teamKey, projectKey, activeTabObj.groupPath, activeTabObj.key, doc)}
                 onSend={(doc) => void handleSend(doc)}
                 onModeChange={setEditorMode}
@@ -362,22 +378,20 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
         />
       )}
 
-      <EnvManager
+      <EnvironmentDialog
         teamKey={teamKey}
         projectKey={projectKey}
         activeId={activeEnv}
-        open={showEnvMgr}
-        onClose={() => setShowEnvMgr(false)}
+        open={showEnvSettings}
+        onClose={() => {
+          setShowEnvSettings(false);
+          // 关闭时重新拉取环境列表，保证保存的 host/变量立即反映到编辑器
+          void loadEnvs();
+        }}
         onChanged={(id) => {
           setActiveEnv(id);
           void loadEnvs();
         }}
-      />
-      <ProjectSettingsDialog
-        teamKey={teamKey}
-        projectKey={projectKey}
-        open={showSettings}
-        onClose={() => setShowSettings(false)}
       />
       <ImportExportDialog
         teamKey={teamKey}

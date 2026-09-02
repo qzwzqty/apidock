@@ -44,7 +44,7 @@ export function MoveTargetDialog({
     <Dialog open={open} onClose={onClose} title={title} className="w-[460px]">
       <div className="space-y-2">
         <button
-          className={`flex w-full cursor-pointer items-center gap-2 rounded-md border border-border px-3 py-2 text-sm transition-colors ${
+          className={`flex w-full cursor-pointer select-none items-center gap-2 rounded-md border border-border px-3 py-2 text-sm transition-colors ${
             target === null ? "border-accent bg-muted" : "hover:bg-muted"
           }`}
           onClick={() => setTarget(null)}
@@ -55,7 +55,7 @@ export function MoveTargetDialog({
         {filtered.map((g) => (
           <button
             key={g.path.join("/")}
-            className={`flex w-full cursor-pointer items-center gap-2 rounded-md border border-border px-3 py-2 text-sm transition-colors ${
+            className={`flex w-full cursor-pointer select-none items-center gap-2 rounded-md border border-border px-3 py-2 text-sm transition-colors ${
               target && target.join("/") === g.path.join("/") ? "border-accent bg-muted" : "hover:bg-muted"
             }`}
             onClick={() => setTarget(g.path)}

@@ -36,165 +36,442 @@ fn sanitize(value: &str) -> String {
     crate::domain::sanitize_key(value)
 }
 
-/// 由 JSON Schema 生成示例值（规范未提供 example 时，用于填充请求体）
-fn schema_example(schema: &Value, components: &Value) -> Value {
-    if let Some(r) = schema.get("$ref").and_then(|v| v.as_str()) {
-        let path = format!("/{}", r.strip_prefix("#/").unwrap_or(r));
-        if let Some(target) = components.pointer(&path) {
-            return schema_example(target, components);
-        }
-        return Value::Null;
-    }
-    if let Some(ex) = schema.get("example").or_else(|| schema.get("default")) {
-        return ex.clone();
-    }
-    if let Some(enum_v) = schema.get("enum").and_then(|e| e.as_array()).and_then(|a| a.first()) {
-        return enum_v.clone();
-    }
-    // allOf：合并各子表的示例
-    if let Some(all) = schema.get("allOf").and_then(|a| a.as_array()) {
-        if let Some(first) = all.first() {
-            let v = schema_example(first, components);
-            if let Value::Object(mut obj) = v {
-                for sub in all.iter().skip(1) {
-                    if let Value::Object(sub_obj) = schema_example(sub, components) {
-                        for (k, vv) in sub_obj {
-                            obj.insert(k, vv);
-                        }
+/// 归一化常见的不规范写法：`type: [x, "null"]`（或 `[x]`）→ 单值 `type: x` + `nullable: true`。
+/// openapiv3 的 Schema 只接受字符串 type，此转换在交给库解析前完成。
+fn normalize_type_arrays(mut value: Value) -> Value {
+    match &mut value {
+        Value::Object(map) => {
+            if let Some(Value::Array(arr)) = map.get("type") {
+                let mut primary: Option<String> = None;
+                let mut nullable = false;
+                for item in arr {
+                    match item {
+                        Value::String(s) if s == "null" => nullable = true,
+                        Value::String(s) if primary.is_none() => primary = Some(s.clone()),
+                        Value::Null => nullable = true,
+                        _ => {}
                     }
                 }
-                return Value::Object(obj);
-            }
-            return v;
-        }
-    }
-    if let Some(one) = schema.get("oneOf").or_else(|| schema.get("anyOf")) {
-        if let Some(first) = one.as_array().and_then(|a| a.first()) {
-            return schema_example(first, components);
-        }
-    }
-    let t = schema.get("type").and_then(|v| v.as_str()).or_else(|| {
-        schema
-            .get("type")
-            .and_then(|v| v.as_array())
-            .and_then(|a| a.first())
-            .and_then(|v| v.as_str())
-    });
-    match t {
-        Some("object") => {
-            let mut obj = serde_json::Map::new();
-            if let Some(ps) = schema.get("properties").and_then(|p| p.as_object()) {
-                for (k, pschema) in ps {
-                    obj.insert(k.clone(), schema_example(pschema, components));
+                match primary {
+                    Some(t) => {
+                        map.insert("type".into(), json!(t));
+                    }
+                    None => {
+                        map.remove("type");
+                    }
                 }
-            } else if let Some(extra) = schema.get("additionalProperties") {
-                if !extra.is_null() {
-                    obj.insert("key".into(), schema_example(extra, components));
+                if nullable {
+                    map.entry("nullable").or_insert_with(|| json!(true));
                 }
             }
-            Value::Object(obj)
-        }
-        Some("array") => {
-            if let Some(items) = schema.get("items") {
-                Value::Array(vec![schema_example(items, components)])
-            } else {
-                Value::Array(Vec::new())
+            for v in map.values_mut() {
+                let mut v2 = std::mem::take(v);
+                v2 = normalize_type_arrays(v2);
+                *v = v2;
             }
         }
-        Some("string") => Value::String(String::new()),
-        Some("integer") | Some("number") => Value::Number(0.into()),
-        Some("boolean") => Value::Bool(false),
-        Some("null") => Value::Null,
-        _ => Value::Null,
+        Value::Array(arr) => {
+            for v in arr {
+                let mut v2 = std::mem::take(v);
+                v2 = normalize_type_arrays(v2);
+                *v = v2;
+            }
+        }
+        _ => {}
+    }
+    value
+}
+
+/// 解析 `#/components/schemas/...` 引用（openapiv3 模型内）
+fn resolve_schema_ref<'a>(
+    r: &'a openapiv3::ReferenceOr<openapiv3::Schema>,
+    c: &'a openapiv3::Components,
+) -> Option<&'a openapiv3::Schema> {
+    match r {
+        openapiv3::ReferenceOr::Item(s) => Some(s),
+        openapiv3::ReferenceOr::Reference { reference } => {
+            let name = reference.strip_prefix("#/components/schemas/")?;
+            c.schemas.get(name)?.as_item()
+        }
     }
 }
 
-/// JSON Schema → 请求体结构树（Apifox 式字段树）
-fn schema_to_json_body(schema: &Value, components: &Value) -> domain::JsonBody {
-    domain::JsonBody { root: schema_to_field(schema, components).unwrap_or_default() }
-}
-
-fn schema_to_field(schema: &Value, components: &Value) -> Option<domain::BodyField> {
-    let mut schema = schema.clone();
-    // 解开 $ref
-    while let Some(r) = schema.get("$ref").and_then(|v| v.as_str()) {
-        let path = format!("/{}", r.strip_prefix("#/").unwrap_or(r));
-        let Some(target) = components.pointer(&path) else { return None };
-        let mut next = target.clone();
-        // 保留外层覆盖字段（description/example 等）
-        if let (Some(from), Some(to)) = (schema.as_object_mut(), next.as_object_mut()) {
-            for (k, v) in from.iter() {
-                if k != "$ref" && !to.contains_key(k) {
-                    to.insert(k.clone(), v.clone());
+/// 由 Schema 生成示例值（规范未提供 example/default 时按类型生成默认值）
+fn schema_example(schema: &openapiv3::Schema, components: &openapiv3::Components) -> Option<Value> {
+    if let Some(v) = schema
+        .schema_data
+        .example
+        .clone()
+        .or_else(|| schema.schema_data.default.clone())
+    {
+        return Some(v);
+    }
+    match &schema.schema_kind {
+        openapiv3::SchemaKind::Type(t) => match t {
+            openapiv3::Type::String(st) => st
+                .enumeration
+                .iter()
+                .flatten()
+                .next()
+                .map(|s| json!(s))
+                .or_else(|| Some(json!(""))),
+            openapiv3::Type::Integer(it) => it
+                .enumeration
+                .iter()
+                .flatten()
+                .next()
+                .map(|n| json!(n))
+                .or_else(|| Some(json!(0))),
+            openapiv3::Type::Number(nt) => nt
+                .enumeration
+                .iter()
+                .flatten()
+                .next()
+                .map(|n| json!(n))
+                .or_else(|| Some(json!(0))),
+            openapiv3::Type::Boolean(bt) => bt
+                .enumeration
+                .iter()
+                .flatten()
+                .next()
+                .map(|b| json!(b))
+                .or(Some(json!(false))),
+            openapiv3::Type::Object(ot) => {
+                let mut obj = serde_json::Map::new();
+                for (key, prop) in &ot.properties {
+                    if let Some(sub) = schema_ref_example_boxed(prop, components) {
+                        obj.insert(key.clone(), sub);
+                    }
+                }
+                if obj.is_empty()
+                    && let Some(openapiv3::AdditionalProperties::Schema(extra)) = &ot.additional_properties
+                    && let Some(v) = schema_ref_example(extra, components)
+                {
+                    obj.insert("key".into(), v);
+                }
+                Some(Value::Object(obj))
+            }
+            openapiv3::Type::Array(at) => at
+                .items
+                .as_ref()
+                .and_then(|r| schema_ref_example_boxed(r, components))
+                .map(|v| json!([v]))
+                .or_else(|| Some(json!([]))),
+        },
+        openapiv3::SchemaKind::OneOf { one_of } => {
+            one_of.first().and_then(|r| schema_ref_example(r, components))
+        }
+        openapiv3::SchemaKind::AnyOf { any_of } => {
+            any_of.first().and_then(|r| schema_ref_example(r, components))
+        }
+        openapiv3::SchemaKind::AllOf { all_of } => {
+            let first = all_of.first().and_then(|r| schema_ref_example(r, components));
+            let mut base = match first {
+                Some(Value::Object(m)) => m,
+                Some(v) => return Some(v),
+                None => serde_json::Map::new(),
+            };
+            for r in all_of.iter().skip(1) {
+                if let Some(Value::Object(sub)) = schema_ref_example(r, components) {
+                    for (k, v) in sub {
+                        base.insert(k, v);
+                    }
                 }
             }
+            Some(Value::Object(base))
         }
-        schema = next;
+        openapiv3::SchemaKind::Any(any) => {
+            if let Some(v) = any.enumeration.first() {
+                return Some(v.clone());
+            }
+            match any.typ.as_deref() {
+                Some("object") => {
+                    let mut obj = serde_json::Map::new();
+                    for (key, prop) in &any.properties {
+                        if let Some(sub) = schema_ref_example_boxed(prop, components) {
+                            obj.insert(key.clone(), sub);
+                        }
+                    }
+                    Some(Value::Object(obj))
+                }
+                Some("array") => any
+                    .items
+                    .as_ref()
+                    .and_then(|r| schema_ref_example_boxed(r, components))
+                    .map(|v| json!([v]))
+                    .or_else(|| Some(json!([]))),
+                Some("string") => Some(json!("")),
+                Some("integer") | Some("number") => Some(json!(0)),
+                Some("boolean") => Some(json!(false)),
+                _ => None,
+            }
+        }
+        openapiv3::SchemaKind::Not { .. } => None,
     }
-    if schema.is_null() {
-        return None;
+}
+
+fn schema_ref_example(
+    r: &openapiv3::ReferenceOr<openapiv3::Schema>,
+    components: &openapiv3::Components,
+) -> Option<Value> {
+    match r {
+        openapiv3::ReferenceOr::Item(s) => schema_example(s, components),
+        openapiv3::ReferenceOr::Reference { reference } => {
+            let name = reference.strip_prefix("#/components/schemas/")?;
+            components
+                .schemas
+                .get(name)?
+                .as_item()
+                .and_then(|s| schema_example(s, components))
+        }
     }
-    let description = schema.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string();
-    let title = schema.get("title").and_then(|d| d.as_str()).unwrap_or("").to_string();
-    let field_type = schema
-        .get("type")
-        .and_then(|t| t.as_str())
-        .or_else(|| schema.get("type").and_then(|t| t.as_array()).and_then(|a| a.first()).and_then(|t| t.as_str()))
-        .unwrap_or("string")
-        .to_string();
-    match field_type.as_str() {
-        "object" => {
-            let mut children = Vec::new();
-            if let Some(ps) = schema.get("properties").and_then(|p| p.as_object()) {
-                let required = schema
-                    .get("required")
-                    .and_then(|r| r.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                for (k, pschema) in ps {
-                    if let Some(mut f) = schema_to_field(pschema, components) {
-                        f.key = k.clone();
-                        f.required = required.contains(k);
+}
+
+fn schema_ref_example_boxed(
+    r: &openapiv3::ReferenceOr<Box<openapiv3::Schema>>,
+    components: &openapiv3::Components,
+) -> Option<Value> {
+    match r {
+        openapiv3::ReferenceOr::Item(s) => schema_example(s, components),
+        openapiv3::ReferenceOr::Reference { reference } => {
+            let name = reference.strip_prefix("#/components/schemas/")?;
+            components
+                .schemas
+                .get(name)?
+                .as_item()
+                .and_then(|s| schema_example(s, components))
+        }
+    }
+}
+
+/// JSON Schema → 请求体结构树（Apifox 式字段树），递归解析 $ref（带循环引用保护）
+fn typed_schema_to_json_body(
+    schema: &openapiv3::Schema,
+    components: &openapiv3::Components,
+) -> domain::JsonBody {
+    domain::JsonBody {
+        root: typed_schema_to_field(schema, components, &mut Vec::new()).unwrap_or_default(),
+    }
+}
+
+fn body_leaf(
+    field_type: &str,
+    name: String,
+    description: String,
+    example: Option<Value>,
+) -> domain::BodyField {
+    let example = example
+        .map(|v| match v {
+            Value::String(s) => s,
+            other => other.to_string(),
+        })
+        .unwrap_or_default();
+    domain::BodyField {
+        field_type: field_type.into(),
+        name,
+        description,
+        example,
+        ..Default::default()
+    }
+}
+
+fn typed_schema_to_field(
+    schema: &openapiv3::Schema,
+    components: &openapiv3::Components,
+    stack: &mut Vec<String>,
+) -> Option<domain::BodyField> {
+    let name = schema.schema_data.title.clone().unwrap_or_default();
+    let description = schema.schema_data.description.clone().unwrap_or_default();
+    let example = schema
+        .schema_data
+        .example
+        .clone()
+        .or_else(|| schema.schema_data.default.clone());
+    match &schema.schema_kind {
+        openapiv3::SchemaKind::Type(t) => match t {
+            openapiv3::Type::String(st) => Some(body_leaf(
+                "string",
+                name,
+                description,
+                example.or_else(|| st.enumeration.iter().flatten().next().map(|s| json!(s))),
+            )),
+            openapiv3::Type::Integer(it) => Some(body_leaf(
+                "integer",
+                name,
+                description,
+                example.or_else(|| it.enumeration.iter().flatten().next().map(|n| json!(n))),
+            )),
+            openapiv3::Type::Number(nt) => Some(body_leaf(
+                "number",
+                name,
+                description,
+                example.or_else(|| nt.enumeration.iter().flatten().next().map(|n| json!(n))),
+            )),
+            openapiv3::Type::Boolean(bt) => Some(body_leaf(
+                "boolean",
+                name,
+                description,
+                example.or_else(|| bt.enumeration.iter().flatten().next().map(|b| json!(b))),
+            )),
+            openapiv3::Type::Object(ot) => {
+                let mut children = Vec::new();
+                for (key, prop) in &ot.properties {
+                    if let Some(mut f) = schema_ref_to_field_boxed(prop, components, stack) {
+                        f.key = key.clone();
+                        f.required = ot.required.contains(key);
                         children.push(f);
                     }
                 }
+                Some(domain::BodyField {
+                    field_type: "object".into(),
+                    name,
+                    description,
+                    children,
+                    ..Default::default()
+                })
+            }
+            openapiv3::Type::Array(at) => {
+                let items = at
+                    .items
+                    .as_ref()
+                    .and_then(|r| schema_ref_to_field_boxed(r, components, stack))
+                    .map(Box::new);
+                Some(domain::BodyField {
+                    field_type: "array".into(),
+                    name,
+                    description,
+                    items,
+                    ..Default::default()
+                })
+            }
+        },
+        openapiv3::SchemaKind::OneOf { one_of } => {
+            one_of.first().and_then(|r| schema_ref_to_field(r, components, stack))
+        }
+        openapiv3::SchemaKind::AnyOf { any_of } => {
+            any_of.first().and_then(|r| schema_ref_to_field(r, components, stack))
+        }
+        openapiv3::SchemaKind::AllOf { all_of } => {
+            let mut children = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for r in all_of {
+                if let Some(f) = schema_ref_to_field(r, components, stack)
+                    && f.field_type == "object"
+                {
+                    for c in f.children {
+                        if seen.insert(c.key.clone()) {
+                            children.push(c);
+                        }
+                    }
+                }
+            }
+            if children.is_empty() {
+                return None;
             }
             Some(domain::BodyField {
                 field_type: "object".into(),
-                name: title,
+                name,
                 description,
                 children,
                 ..Default::default()
             })
         }
-        "array" => {
-            let items = schema
-                .get("items")
-                .and_then(|i| schema_to_field(i, components))
-                .map(Box::new);
-            Some(domain::BodyField { field_type: "array".into(), name: title, description, items, ..Default::default() })
+        openapiv3::SchemaKind::Any(any) => {
+            if let Some(v) = any.enumeration.first().cloned() {
+                return Some(body_leaf(
+                    any.typ.as_deref().unwrap_or("string"),
+                    name,
+                    description,
+                    Some(v),
+                ));
+            }
+            match any.typ.as_deref() {
+                Some("object") => {
+                    let mut children = Vec::new();
+                    for (key, prop) in &any.properties {
+                        if let Some(mut f) = schema_ref_to_field_boxed(prop, components, stack) {
+                            f.key = key.clone();
+                            f.required = any.required.contains(key);
+                            children.push(f);
+                        }
+                    }
+                    Some(domain::BodyField {
+                        field_type: "object".into(),
+                        name,
+                        description,
+                        children,
+                        ..Default::default()
+                    })
+                }
+                Some("array") => {
+                    let items = any
+                        .items
+                        .as_ref()
+                        .and_then(|r| schema_ref_to_field_boxed(r, components, stack))
+                        .map(Box::new);
+                    Some(domain::BodyField {
+                        field_type: "array".into(),
+                        name,
+                        description,
+                        items,
+                        ..Default::default()
+                    })
+                }
+                Some("null") => Some(domain::BodyField {
+                    field_type: "null".into(),
+                    name,
+                    description,
+                    ..Default::default()
+                }),
+                Some(t @ ("string" | "integer" | "number" | "boolean")) => {
+                    Some(body_leaf(t, name, description, None))
+                }
+                _ => None,
+            }
         }
-        t => {
-            let example = schema
-                .get("example")
-                .or_else(|| schema.get("default"))
-                .or_else(|| schema.get("enum").and_then(|e| e.as_array()).and_then(|a| a.first()))
-                .map(|v| match v {
-                    Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                })
-                .unwrap_or_default();
-            Some(domain::BodyField {
-                field_type: t.to_string(),
-                name: title,
-                description,
-                example,
-                ..Default::default()
-            })
+        openapiv3::SchemaKind::Not { .. } => None,
+    }
+}
+
+/// 转换 schema 引用（引用名入栈以检测循环引用）
+fn schema_ref_to_field(
+    r: &openapiv3::ReferenceOr<openapiv3::Schema>,
+    components: &openapiv3::Components,
+    stack: &mut Vec<String>,
+) -> Option<domain::BodyField> {
+    match r {
+        openapiv3::ReferenceOr::Item(s) => typed_schema_to_field(s, components, stack),
+        openapiv3::ReferenceOr::Reference { reference } => {
+            let name = reference.strip_prefix("#/components/schemas/")?;
+            if stack.iter().any(|s| s.as_str() == name) {
+                return None;
+            }
+            let target = components.schemas.get(name)?.as_item()?;
+            stack.push(name.to_string());
+            let f = typed_schema_to_field(target, components, stack);
+            stack.pop();
+            f
+        }
+    }
+}
+
+fn schema_ref_to_field_boxed(
+    r: &openapiv3::ReferenceOr<Box<openapiv3::Schema>>,
+    components: &openapiv3::Components,
+    stack: &mut Vec<String>,
+) -> Option<domain::BodyField> {
+    match r {
+        openapiv3::ReferenceOr::Item(s) => typed_schema_to_field(s, components, stack),
+        openapiv3::ReferenceOr::Reference { reference } => {
+            let name = reference.strip_prefix("#/components/schemas/")?;
+            if stack.iter().any(|s| s.as_str() == name) {
+                return None;
+            }
+            let target = components.schemas.get(name)?.as_item()?;
+            stack.push(name.to_string());
+            let f = typed_schema_to_field(target, components, stack);
+            stack.pop();
+            f
         }
     }
 }
@@ -246,272 +523,208 @@ fn value_to_field(v: &Value) -> Option<domain::BodyField> {
     Some(domain::BodyField { field_type: field_type.into(), example, ..Default::default() })
 }
 
-/// 解析 OpenAPI 3.x（JSON 或 YAML）→ 待导入接口列表
+/// 解析 OpenAPI 3.x（JSON 或 YAML）→ 待导入接口列表。
+/// 文档解析与 $ref 解析委托给开源库 openapiv3（https://docs.rs/openapiv3），
+/// 这里只保留「规范 → 接口」的转换逻辑（参数/请求体/鉴权/分组/URL）。
 pub fn parse_openapi(content: &str, is_yaml: bool) -> Result<(String, Vec<ImportedIface>), String> {
     let doc: Value = if is_yaml {
         serde_yaml_ng::from_str(content).map_err(|e| format!("YAML 解析失败：{e}"))
     } else {
         serde_json::from_str(content).map_err(|e| format!("JSON 解析失败：{e}"))
     }?;
+    // 归一化 `type: [x, "null"]` 等数组写法后交给 openapiv3
+    let doc = normalize_type_arrays(doc);
+    let spec: openapiv3::OpenAPI =
+        serde_json::from_value(doc).map_err(|e| format!("OpenAPI 文档解析失败：{e}"))?;
 
-    let info_name = doc
-        .get("info")
-        .and_then(|i| i.get("title"))
-        .and_then(|t| t.as_str())
-        .unwrap_or("导入的项目")
-        .to_string();
+    let info_name = spec.info.title.clone();
+    let components = spec.components.clone().unwrap_or_default();
 
-    let mut schemes: Vec<(String, &str)> = Vec::new();
-    let mut security_required: Option<String> = None;
-    if let Some(ss) = doc.pointer("/components/securitySchemes") {
-        if let Some(obj) = ss.as_object() {
-            for (name, scheme) in obj {
-                let kind = match scheme.get("type").and_then(|t| t.as_str()) {
-                    Some("http") => match scheme.get("scheme").and_then(|s| s.as_str()) {
-                        Some("basic") => "basic",
-                        Some("bearer") => "bearer",
-                        _ => "",
-                    },
-                    Some("apiKey") => "api-key",
+    // 鉴权方案：components.securitySchemes + 全局 security
+    let mut schemes: Vec<(String, String)> = Vec::new();
+    for (name, scheme) in &components.security_schemes {
+        let kind = match scheme {
+            openapiv3::ReferenceOr::Item(openapiv3::SecurityScheme::HTTP { scheme: s, .. }) => {
+                match s.as_str() {
+                    "basic" => "basic",
+                    "bearer" => "bearer",
                     _ => "",
-                };
-                if !kind.is_empty() {
-                    schemes.push((name.clone(), kind));
                 }
             }
+            openapiv3::ReferenceOr::Item(openapiv3::SecurityScheme::APIKey { .. }) => "api-key",
+            _ => "",
+        };
+        if !kind.is_empty() {
+            schemes.push((name.clone(), kind.to_string()));
         }
     }
-    if let Some(sec) = doc.get("security").and_then(|s| s.as_array()) {
+    let mut security_required: Option<String> = None;
+    if let Some(sec) = &spec.security {
         for entry in sec {
-            if let Some(obj) = entry.as_object() {
-                if let Some((name, _)) = obj.iter().next() {
-                    if let Some((_, kind)) = schemes.iter().find(|(n, _)| n == name) {
-                        security_required = Some(kind.to_string());
-                    }
-                }
+            if let Some((name, _)) = entry.iter().next()
+                && let Some((_, kind)) = schemes.iter().find(|(n, _)| n == name)
+            {
+                security_required = Some(kind.clone());
             }
         }
     }
 
-    let server_base = doc
-        .get("servers")
-        .and_then(|s| s.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|s| s.get("url"))
-        .and_then(|u| u.as_str())
-        .unwrap_or("")
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
+    let server_base = spec
+        .servers
+        .first()
+        .map(|s| s.url.trim().trim_end_matches('/').to_string())
+        .unwrap_or_default();
 
     let mut list: Vec<ImportedIface> = Vec::new();
-    if let Some(paths) = doc.get("paths").and_then(|p| p.as_object()) {
-        for (path, path_item) in paths {
-            if path == "components" || path.starts_with("x-") {
-                continue;
-            }
-            let Some(pt) = path_item.as_object() else { continue };
-            for (method, op) in pt {
-                let method = method.to_lowercase();
-                if !["get", "post", "put", "patch", "delete", "head", "options", "trace"].contains(&method.as_str()) {
+    for (path, path_item_ref) in spec.paths.iter() {
+        let Some(path_item) = resolve_path_item(path_item_ref) else { continue };
+        for (method, op) in path_item.iter() {
+            let name = op
+                .summary
+                .clone()
+                .or_else(|| op.operation_id.clone())
+                .unwrap_or_else(|| path.to_string());
+            let description = op.description.clone().unwrap_or_default();
+            // 文件名 = 名称（由规范中的 summary/operationId 决定），写入时再做合法性处理
+            let key = name.clone();
+
+            let mut headers = Vec::new();
+            let mut query = Vec::new();
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            // path 级参数 + operation 级参数（operation 覆盖同名参数）
+            for p in path_item.parameters.iter().chain(op.parameters.iter()) {
+                let Some(param) = resolve_parameter(p, &components) else { continue };
+                let data = param.parameter_data_ref();
+                let loc = match param {
+                    openapiv3::Parameter::Query { .. } => "query",
+                    openapiv3::Parameter::Header { .. } => "header",
+                    openapiv3::Parameter::Path { .. } => "path",
+                    openapiv3::Parameter::Cookie { .. } => "cookie",
+                };
+                if !seen.insert(format!("{loc}:{}", data.name)) {
                     continue;
                 }
-                let Some(op) = op.as_object() else { continue };
-
-                let name = op
-                    .get("summary")
-                    .or_else(|| op.get("operationId"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(path)
-                    .to_string();
-                let description = op
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                // 文件名 = 名称（由规范中的 summary/operationId 决定），写入时再做合法性处理
-                let key = name.clone();
-
-                let mut headers = Vec::new();
-                let mut query = Vec::new();
-                let mut body = domain::Body::default();
-
-                if let Some(params) = op.get("parameters").and_then(|p| p.as_array()) {
-                    for p in params {
-                        let Some(p) = p.as_object() else { continue };
-                        let Some(loc) = p.get("in").and_then(|v| v.as_str()) else { continue };
-                        let k = p.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        if k.is_empty() {
-                            continue;
-                        }
-                        let schema = p.get("schema");
-                        let param_type = schema
-                            .and_then(|s| s.get("type"))
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("string")
-                            .to_string();
-                        let required = p.get("required").and_then(|r| r.as_bool()).unwrap_or(false);
-                        let mut example = p
-                            .get("example")
-                            .cloned()
-                            .or_else(|| schema.and_then(|s| s.get("example")).cloned())
-                            .or_else(|| schema.and_then(|s| s.get("default")).cloned());
-                        if example.is_none() {
-                            if let Some(t) = p.get("schema").and_then(|s| s.get("type")).and_then(|t| t.as_str()) {
-                                example = match t {
-                                    "integer" | "number" => Some(json!(0)),
-                                    "boolean" => Some(json!(false)),
-                                    "array" => Some(json!([])),
-                                    "object" => Some(json!({})),
-                                    _ => None,
-                                };
-                            }
-                        }
-                        let example_str = example
-                            .map(|v| match v {
-                                Value::String(s) => s,
-                                other => other.to_string(),
-                            })
-                            .unwrap_or_default();
-                        let description = p
-                            .get("description")
-                            .and_then(|d| d.as_str())
-                            .or_else(|| schema.and_then(|s| s.get("description")).and_then(|d| d.as_str()))
-                            .unwrap_or("")
-                            .to_string();
-                        let param = domain::ApiParam {
-                            key: k,
-                            example: example_str,
-                            required,
-                            param_type,
-                            description,
-                            enabled: true,
-                        };
-                        match loc {
-                            "header" => headers.push(param),
-                            "query" => query.push(param),
-                            _ => {}
-                        }
-                    }
+                let Some(api_param) = param_to_api_param(data, &components) else { continue };
+                match loc {
+                    "query" => query.push(api_param),
+                    "header" => headers.push(api_param),
+                    _ => {}
                 }
-
-if let Some(rb) = op.get("requestBody") {
-                        let Some(content) = rb.get("content").and_then(|c| c.as_object()) else {
-                            continue;
-                        };
-                        if let Some(json_media) = content.get("application/json").and_then(|m| m.as_object()) {
-                            // 结构树：以 schema 为准
-                            let mut json_tree = json_media
-                                .get("schema")
-                                .map(|s| schema_to_json_body(s, &doc))
-                                .unwrap_or_default();
-                            let example: Option<Value> = json_media
-                                .get("example")
-                                .cloned()
-                                .or_else(|| {
-                                    json_media
-                                        .get("examples")
-                                        .and_then(|e| e.as_object())
-                                        .and_then(|m| m.values().next())
-                                        .and_then(|x| x.get("value"))
-                                        .cloned()
-                                })
-                                .or_else(|| {
-                                    json_media
-                                        .get("schema")
-                                        .map(|s| schema_example(s, &doc))
-                                });
-                            let content_str = match example {
-                                Some(v) => serde_json::to_string_pretty(&v).map_err(|_| "序列化示例失败").unwrap_or("{}".into()),
-                                None => "{}".into(),
-                            };
-                            // 树为空时用示例回填结构（保持文档可用）
-                            if json_tree.is_empty() {
-                                json_tree = json_value_to_body(&content_str);
-                            }
-                            body = domain::Body {
-                                mode: "json".into(),
-                                content: content_str,
-                                content_type: "application/json".into(),
-                                json: json_tree,
-                                ..Default::default()
-                            };
-                        } else if let Some(text_media) = content.get("text/plain").and_then(|m| m.as_object()) {
-                            let content_str = text_media
-                                .get("example")
-                                .and_then(|e| e.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            body = domain::Body {
-                                mode: "raw".into(),
-                                content: content_str,
-                                content_type: "text/plain".into(),
-                                ..Default::default()
-                            };
-                        }
-                    }
-
-                let mut auth = domain::Auth::default();
-                if let Some(kind) = &security_required {
-                    match kind.as_str() {
-                        "bearer" => {
-                            auth = domain::Auth { kind: "bearer".into(), token: "{{token}}".into(), ..Default::default() };
-                        }
-                        "basic" => {
-                            auth = domain::Auth {
-                                kind: "basic".into(),
-                                username: "{{username}}".into(),
-                                password: "{{password}}".into(),
-                                ..Default::default()
-                            };
-                        }
-                        "api-key" => {
-                            auth = domain::Auth {
-                                kind: "api-key".into(),
-                                api_key_name: "X-API-Key".into(),
-                                api_key_in: "header".into(),
-                                api_key_value: "{{api_key}}".into(),
-                                ..Default::default()
-                            };
-                        }
-                        _ => {}
-                    }
-                }
-
-                let url = if server_base.is_empty() {
-                    path.to_string()
-                } else {
-                    format!("{server_base}{path}")
-                };
-
-                let group_path: Vec<String> = op
-                    .get("tags")
-                    .and_then(|t| t.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|t| t.as_str())
-                    .map(|t| {
-                        let k = sanitize(t);
-                        if k.is_empty() || k == "default" {
-                            Vec::new()
-                        } else {
-                            vec![k]
-                        }
-                    })
-                    .unwrap_or_default();
-
-                list.push(ImportedIface {
-                    group_path,
-                    key,
-                    name,
-                    method: method.to_uppercase(),
-                    url,
-                    headers,
-                    query,
-                    body,
-                    auth,
-                    description,
-                });
             }
+
+            let mut body = domain::Body::default();
+            if let Some(rb_ref) = &op.request_body
+                && let Some(rb) = resolve_request_body(rb_ref, &components)
+            {
+                if let Some(media) = rb.content.get("application/json") {
+                        let example = media
+                            .example
+                            .clone()
+                            .or_else(|| {
+                                media.examples.iter().next().and_then(|(_, e)| match e {
+                                    openapiv3::ReferenceOr::Item(ex) => ex.value.clone(),
+                                    _ => None,
+                                })
+                            })
+                            .or_else(|| {
+                                media.schema.as_ref().and_then(|rs| schema_ref_example(rs, &components))
+                            });
+                        let content_str = match example {
+                            Some(v) => serde_json::to_string_pretty(&v)
+                                .map_err(|_| "序列化示例失败".to_string())
+                                .unwrap_or_else(|_| "{}".into()),
+                            None => "{}".into(),
+                        };
+                        let mut json_tree = media
+                            .schema
+                            .as_ref()
+                            .and_then(|rs| resolve_schema_ref(rs, &components))
+                            .map(|s| typed_schema_to_json_body(s, &components))
+                            .unwrap_or_default();
+                        // 树为空时用示例回填结构（保持文档可用）
+                        if json_tree.is_empty() {
+                            json_tree = json_value_to_body(&content_str);
+                        }
+                        body = domain::Body {
+                            mode: "json".into(),
+                            content: content_str,
+                            content_type: "application/json".into(),
+                            json: json_tree,
+                            ..Default::default()
+                        };
+                    } else if let Some(media) = rb.content.get("text/plain") {
+                        let content_str = media
+                            .example
+                            .clone()
+                            .and_then(|v| v.as_str().map(String::from))
+                            .unwrap_or_default();
+                        body = domain::Body {
+                            mode: "raw".into(),
+                            content: content_str,
+                            content_type: "text/plain".into(),
+                            ..Default::default()
+                        };
+                    }
+            }
+
+            let mut auth = domain::Auth::default();
+            if let Some(kind) = &security_required {
+                match kind.as_str() {
+                    "bearer" => {
+                        auth = domain::Auth { kind: "bearer".into(), token: "{{token}}".into(), ..Default::default() };
+                    }
+                    "basic" => {
+                        auth = domain::Auth {
+                            kind: "basic".into(),
+                            username: "{{username}}".into(),
+                            password: "{{password}}".into(),
+                            ..Default::default()
+                        };
+                    }
+                    "api-key" => {
+                        auth = domain::Auth {
+                            kind: "api-key".into(),
+                            api_key_name: "X-API-Key".into(),
+                            api_key_in: "header".into(),
+                            api_key_value: "{{api_key}}".into(),
+                            ..Default::default()
+                        };
+                    }
+                    _ => {}
+                }
+            }
+
+            let url = if server_base.is_empty() {
+                path.to_string()
+            } else {
+                format!("{server_base}{path}")
+            };
+
+            let group_path: Vec<String> = op
+                .tags
+                .first()
+                .map(|t| {
+                    let k = sanitize(t);
+                    if k.is_empty() || k == "default" {
+                        Vec::new()
+                    } else {
+                        vec![k]
+                    }
+                })
+                .unwrap_or_default();
+
+            list.push(ImportedIface {
+                group_path,
+                key,
+                name,
+                method: method.to_uppercase(),
+                url,
+                headers,
+                query,
+                body,
+                auth,
+                description,
+            });
         }
     }
 
@@ -519,6 +732,113 @@ if let Some(rb) = op.get("requestBody") {
         return Err("未解析到任何 paths 接口".into());
     }
     Ok((info_name, list))
+}
+
+fn resolve_path_item(r: &openapiv3::ReferenceOr<openapiv3::PathItem>) -> Option<&openapiv3::PathItem> {
+    match r {
+        openapiv3::ReferenceOr::Item(pi) => Some(pi),
+        // 3.1 的 pathItems 引用不在 3.0 模型内，跳过
+        openapiv3::ReferenceOr::Reference { .. } => None,
+    }
+}
+
+/// 解析 `#/components/parameters/...` 引用
+fn resolve_parameter<'a>(
+    r: &'a openapiv3::ReferenceOr<openapiv3::Parameter>,
+    c: &'a openapiv3::Components,
+) -> Option<&'a openapiv3::Parameter> {
+    match r {
+        openapiv3::ReferenceOr::Item(p) => Some(p),
+        openapiv3::ReferenceOr::Reference { reference } => {
+            let name = reference.strip_prefix("#/components/parameters/")?;
+            c.parameters.get(name)?.as_item()
+        }
+    }
+}
+
+/// 解析 `#/components/requestBodies/...` 引用
+fn resolve_request_body<'a>(
+    r: &'a openapiv3::ReferenceOr<openapiv3::RequestBody>,
+    c: &'a openapiv3::Components,
+) -> Option<&'a openapiv3::RequestBody> {
+    match r {
+        openapiv3::ReferenceOr::Item(rb) => Some(rb),
+        openapiv3::ReferenceOr::Reference { reference } => {
+            let name = reference.strip_prefix("#/components/requestBodies/")?;
+            c.request_bodies.get(name)?.as_item()
+        }
+    }
+}
+
+/// 参数 → 本项目 ApiParam（query/header；path/cookie 由调用方过滤）
+fn param_to_api_param(
+    data: &openapiv3::ParameterData,
+    components: &openapiv3::Components,
+) -> Option<domain::ApiParam> {
+    let key = data.name.clone();
+    if key.is_empty() {
+        return None;
+    }
+    let schema = match &data.format {
+        openapiv3::ParameterSchemaOrContent::Schema(rs) => resolve_schema_ref(rs, components),
+        _ => None,
+    };
+    let param_type = schema.map(schema_type_name).unwrap_or_else(|| "string".to_string());
+    let example = data
+        .example
+        .clone()
+        .or_else(|| schema.and_then(|s| schema_example(s, components)))
+        .map(|v| match v {
+            Value::String(s) => s,
+            other => other.to_string(),
+        })
+        .unwrap_or_default();
+    let description = data
+        .description
+        .clone()
+        .or_else(|| schema.and_then(|s| s.schema_data.description.clone()))
+        .unwrap_or_default();
+    Some(domain::ApiParam {
+        key,
+        example,
+        required: data.required,
+        param_type,
+        description,
+        enabled: true,
+    })
+}
+
+/// Schema → 参数类型名（空/未知按 string）
+fn schema_type_name(schema: &openapiv3::Schema) -> String {
+    match &schema.schema_kind {
+        openapiv3::SchemaKind::Type(t) => match t {
+            openapiv3::Type::String(_) => "string",
+            openapiv3::Type::Integer(_) => "integer",
+            openapiv3::Type::Number(_) => "number",
+            openapiv3::Type::Boolean(_) => "boolean",
+            openapiv3::Type::Object(_) => "object",
+            openapiv3::Type::Array(_) => "array",
+        }
+        .to_string(),
+        openapiv3::SchemaKind::OneOf { one_of } => one_of
+            .first()
+            .and_then(|r| match r {
+                openapiv3::ReferenceOr::Item(s) => Some(s),
+                _ => None,
+            })
+            .map(schema_type_name)
+            .unwrap_or_else(|| "string".into()),
+        openapiv3::SchemaKind::AnyOf { any_of } => any_of
+            .first()
+            .and_then(|r| match r {
+                openapiv3::ReferenceOr::Item(s) => Some(s),
+                _ => None,
+            })
+            .map(schema_type_name)
+            .unwrap_or_else(|| "string".into()),
+        openapiv3::SchemaKind::Any(any) => any.typ.clone().unwrap_or_else(|| "string".into()),
+        _ => "string".into(),
+    }
 }
 
 /// 解析 Postman Collection v2（JSON）→ 待导入接口列表
@@ -1212,5 +1532,57 @@ mod tests {
         let (_, list) = parse_openapi(&out.content, false).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].url, "https://api.example.com/v1/users");
+    }
+
+    #[test]
+    fn openapi_resolves_ref_parameters_and_type_array() {
+        // 回归：$ref 参数（#/components/parameters）必须被解析；
+        // 组件里含 `type: [string, "null"]` 数组写法的 schema 也必须能解析（归一化后交给 openapiv3）
+        let spec = r##"{
+  "openapi": "3.0.3",
+  "info": { "title": "t", "version": "1" },
+  "components": {
+    "parameters": {
+      "PlantId": { "in": "query", "name": "plant_id", "required": true, "schema": { "type": "integer", "example": 2012 } }
+    },
+    "schemas": {
+      "Error": { "type": "object", "properties": { "detail": { "type": ["string", "null"] } } },
+      "Robot": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" }, "port": { "type": "integer" } } }
+    }
+  },
+  "paths": {
+    "/robots": {
+      "get": {
+        "summary": "查询机器人",
+        "tags": ["robot"],
+        "parameters": [ { "$ref": "#/components/parameters/PlantId" } ],
+        "responses": {}
+      },
+      "post": {
+        "summary": "新增机器人",
+        "tags": ["robot"],
+        "requestBody": { "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Robot" } } } } },
+        "responses": {}
+      }
+    }
+  }
+}"##;
+        let (_, list) = parse_openapi(spec, false).unwrap();
+        let get = list.iter().find(|i| i.name == "查询机器人").unwrap();
+        assert_eq!(get.query.len(), 1);
+        assert_eq!(get.query[0].key, "plant_id");
+        assert_eq!(get.query[0].param_type, "integer");
+        assert_eq!(get.query[0].example, "2012");
+        assert!(get.query[0].required);
+        let post = list.iter().find(|i| i.name == "新增机器人").unwrap();
+        assert_eq!(post.body.mode, "json");
+        assert_eq!(post.body.json.root.field_type, "array");
+        let item = post.body.json.root.items.as_ref().unwrap();
+        assert_eq!(item.field_type, "object");
+        let keys: Vec<&str> = item.children.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(keys, vec!["name", "port"]);
+        assert!(item.children.iter().any(|c| c.key == "name" && c.required));
+        let v: Value = serde_json::from_str(&post.body.content).unwrap();
+        assert_eq!(v[0]["port"], 0);
     }
 }

@@ -42,7 +42,7 @@ export function RunReportDialog({
                     className="rounded-md border border-border"
                   >
                     <button
-                      className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
+                      className="flex w-full cursor-pointer select-none items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
                       onClick={() => setExpanded((e) => ({ ...e, [id]: !e[id] }))}
                     >
                       {exp ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}

@@ -262,6 +262,40 @@ export interface SendErrorInfo {
 
 export type SendOutcome = { ok: true; res: SendResponse } | { ok: false; err: SendErrorInfo };
 
+/** 请求历史总结（列表用） */
+export interface HistorySummary {
+  id: number;
+  teamKey: string;
+  projectKey: string;
+  projectName: string;
+  envId: string;
+  envName: string;
+  ifaceKey: string;
+  ifaceName: string;
+  /** 引用主键（对应团队/项目/分组/接口已删除或未知时为 null） */
+  teamId: number | null;
+  projectId: number | null;
+  groupId: number | null;
+  ifaceId: number | null;
+  method: string;
+  url: string;
+  status: number | null;
+  ok: boolean;
+  timeMs: number;
+  /** Unix 毫秒时间戳 */
+  createdAtMs: number;
+}
+
+/** 请求历史完整记录：请求定义 + 环境/全局快照 + 响应/错误，可独立重发 */
+export interface HistoryRecord extends HistorySummary {
+  doc: InterfaceFile;
+  env: EnvironmentFile;
+  globalVariables: KeyValue[];
+  globalParams: GlobalParams;
+  response: SendResponse | null;
+  error: SendErrorInfo | null;
+}
+
 export interface InterfaceDoc {
   groupPath: string[];
   key: string;
@@ -340,14 +374,33 @@ export const api = {
     projectKey: string,
     envId: string,
     iface: InterfaceFile,
+    ifaceKey?: string,
+    ifaceName?: string,
+    groupPath?: string[],
   ): Promise<SendOutcome> => {
     try {
-      const res = await invoke<SendResponse>("send_request", { teamKey, projectKey, envId, iface });
+      const res = await invoke<SendResponse>("send_request", {
+        teamKey,
+        projectKey,
+        envId,
+        iface,
+        ifaceKey: ifaceKey ?? null,
+        ifaceName: ifaceName ?? null,
+        groupPath: groupPath ?? [],
+      });
       return { ok: true, res };
     } catch (e) {
       return { ok: false, err: e as SendErrorInfo };
     }
   },
+
+  listRequestHistory: () => invoke<HistorySummary[]>("list_request_history"),
+  getRequestHistory: (id: number) => invoke<HistoryRecord>("get_request_history", { id }),
+  deleteRequestHistory: (id: number) => invoke<void>("delete_request_history", { id }),
+  clearRequestHistory: () => invoke<void>("clear_request_history"),
+  /** 按历史快照重发请求（可传入编辑后的接口定义；记为新历史），返回新记录 */
+  resendHistory: (id: number, iface?: InterfaceFile) =>
+    invoke<HistoryRecord>("resend_history", { id, iface: iface ?? null }),
 
   runInterfaces: (teamKey: string, projectKey: string, groupPath: string[]) =>
     invoke<RunReport>("run_interfaces", { teamKey, projectKey, groupPath }),
@@ -368,3 +421,41 @@ export const api = {
   ) =>
     invoke<string[]>("export_interface_openapi_file", { path, teamKey, projectKey, groupPath, ifaceKey, yaml }),
 };
+
+/** 标签页配置数量（标题徽标用，与 InterfaceEditor 的 Tab 一一对应） */
+export type ConfigTab = "params" | "headers" | "body" | "auth" | "vars" | "assert" | "desc";
+
+/**
+ * 统计各区块「已配置」的数量：
+ * - params / headers / vars：非空 key 的行数
+ * - body：json / raw / file 视为整体 1 个（无内容为 0）；urlencoded / form-data 按字段行数；none 为 0
+ * - auth：非 none 视为 1
+ * - assert：断言条数；desc：说明非空视为 1
+ */
+export function configCounts(doc: InterfaceFile): Record<ConfigTab, number> {
+  const params = doc.query.filter((p) => p.key.trim()).length;
+  const headers = doc.headers.filter((p) => p.key.trim()).length;
+  let body = 0;
+  switch (doc.body.mode) {
+    case "json":
+      body = isJsonBodyEmpty(doc.body.json) && !doc.body.content.trim() ? 0 : 1;
+      break;
+    case "raw":
+      body = doc.body.content.trim() ? 1 : 0;
+      break;
+    case "urlencoded":
+    case "form-data":
+      body = doc.body.form.filter((p) => p.key.trim()).length;
+      break;
+    case "file":
+      body = doc.body.filePath?.trim() ? 1 : 0;
+      break;
+    default:
+      body = 0;
+  }
+  const auth = doc.auth.kind !== "none" ? 1 : 0;
+  const vars = doc.variables.filter((v) => v.key.trim()).length;
+  const assert = doc.assertions.length;
+  const desc = doc.description.trim() ? 1 : 0;
+  return { params, headers, body, auth, vars, assert, desc };
+}

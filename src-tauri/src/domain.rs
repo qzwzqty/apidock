@@ -385,6 +385,73 @@ pub enum TreeNode {
     Interface { key: String, name: String, method: String },
 }
 
+/// 请求历史总结（列表用：不含完整快照与响应体）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistorySummary {
+    pub id: i64,
+    pub team_key: String,
+    pub project_key: String,
+    pub project_name: String,
+    pub env_id: String,
+    pub env_name: String,
+    pub iface_key: String,
+    pub iface_name: String,
+    /// 引用主键（可空：对应团队/项目/分组/接口已删除或未知）
+    pub team_id: Option<i32>,
+    pub project_id: Option<i32>,
+    pub group_id: Option<i32>,
+    pub iface_id: Option<i32>,
+    pub method: String,
+    /// 实际发送的 URL（已解析变量；失败时回落接口原始 URL）
+    pub url: String,
+    pub status: Option<u16>,
+    pub ok: bool,
+    pub time_ms: u64,
+    pub created_at_ms: i64,
+}
+
+/// 请求历史完整记录：请求定义 + 环境/全局变量快照 + 响应/错误。
+/// 自包含（不依赖项目/环境仍存在），可独立重发。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryRecord {
+    pub id: i64,
+    pub team_key: String,
+    pub project_key: String,
+    pub project_name: String,
+    pub env_id: String,
+    pub env_name: String,
+    pub iface_key: String,
+    pub iface_name: String,
+    pub team_id: Option<i32>,
+    pub project_id: Option<i32>,
+    pub group_id: Option<i32>,
+    pub iface_id: Option<i32>,
+    pub method: String,
+    pub url: String,
+    pub status: Option<u16>,
+    pub ok: bool,
+    pub time_ms: u64,
+    pub created_at_ms: i64,
+    /// 发送时的接口定义（完整请求，含 body/headers/query/auth；URL/参数等为解析后的实际值）
+    pub doc: InterfaceFile,
+    /// 发送时的环境快照
+    pub env: EnvironmentFile,
+    pub global_variables: Vec<KeyValue>,
+    pub global_params: GlobalParams,
+    pub response: Option<crate::http::SendResponse>,
+    pub error: Option<crate::http::SendErrorInfo>,
+}
+
+/// 当前 Unix 毫秒时间戳（历史记录的时间列；epoch ms 便于前端直接换算本地日期）
+pub fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

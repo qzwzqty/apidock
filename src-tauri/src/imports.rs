@@ -528,7 +528,11 @@ fn value_to_field(v: &Value) -> Option<domain::BodyField> {
 /// 这里只保留「规范 → 接口」的转换逻辑（参数/请求体/鉴权/分组/URL）。
 pub fn parse_openapi(content: &str, is_yaml: bool) -> Result<(String, Vec<ImportedIface>), String> {
     let doc: Value = if is_yaml {
-        serde_yaml_ng::from_str(content).map_err(|e| format!("YAML 解析失败：{e}"))
+        serde_yaml_ng::from_str(content).map_err(|e| {
+            format!(
+                "YAML 解析失败：{e}。提示：若报错位置的文本里含有冒号+空格（如 SQL 报错信息），需用引号包裹该文本"
+            )
+        })
     } else {
         serde_json::from_str(content).map_err(|e| format!("JSON 解析失败：{e}"))
     }?;

@@ -13,6 +13,7 @@ import {
   AuthEditor,
   KvList,
   AssertionEditor,
+  ResponseList,
   SendOptionsDialog,
   UrlInput,
   type Tab,
@@ -134,6 +135,7 @@ function EditableRequest({
             ["auth", "鉴权"],
             ["vars", "变量"],
             ["assert", "断言"],
+            ["resp", "响应"],
             ["desc", "说明"],
           ] as [Tab, string][]
         ).map(([k, label]) => (
@@ -181,6 +183,7 @@ function EditableRequest({
         {tab === "auth" && <AuthEditor auth={doc.auth} onChange={(auth) => update({ auth })} />}
         {tab === "vars" && <KvList rows={doc.variables} onChange={(list) => updateKv("variables", list)} />}
         {tab === "assert" && <AssertionEditor rows={doc.assertions} onChange={updateAssertions} />}
+        {tab === "resp" && <ResponseList rows={doc.responses} onChange={(list) => update({ responses: list })} />}
         {tab === "desc" && (
           <div className="max-w-3xl">
             <div className="mb-1.5">

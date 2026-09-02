@@ -322,6 +322,21 @@ pub struct Auth {
     pub api_key_value: String,
 }
 
+/// 接口响应定义（文档化：状态码 + 说明 + 响应体结构）
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ResponseDef {
+    /// 状态码（"200"、"2XX"、"default"）
+    pub status_code: String,
+    pub description: String,
+    /// 响应体 Media Type（空 = 无响应体）
+    pub content_type: String,
+    /// json 模式的响应体结构树
+    pub json: JsonBody,
+    /// 非 json 模式的响应体示例文本（text/plain、text/xml 等）
+    pub content: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
 pub enum Assertion {
@@ -346,6 +361,8 @@ pub struct InterfaceFile {
     pub variables: Vec<KeyValue>,
     pub assertions: Vec<Assertion>,
     pub description: String,
+    /// 响应定义列表（文档化，导入/导出时与 OpenAPI responses 互转）
+    pub responses: Vec<ResponseDef>,
     // 发送选项（None 用默认值）
     pub timeout_ms: Option<u64>,
     pub redirect_limit: Option<u64>,
@@ -368,6 +385,7 @@ impl InterfaceFile {
             variables: Vec::new(),
             assertions: Vec::new(),
             description: String::new(),
+            responses: Vec::new(),
             timeout_ms: None,
             redirect_limit: None,
             tls_verify: None,

@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { marked } from "marked";
-import { Save, Send, Check, SlidersHorizontal, RotateCcw, Plus, Trash2, Eye, PencilLine, ChevronRight, ChevronDown, Wand2 } from "lucide-react";
+import { Save, Send, Check, SlidersHorizontal, RotateCcw, Plus, Trash2, Eye, PencilLine, ChevronRight, ChevronDown, Wand2, Upload } from "lucide-react";
 import type { ApiParam, Assertion, BodyField, InterfaceFile, JsonBody, KeyValue } from "@/lib/api";
 import { isJsonBodyEmpty, newApiParam, newBodyField, jsonBodyToValue, configCounts } from "@/lib/api";
 import { METHODS, methodColor } from "@/lib/methods";
@@ -48,12 +48,103 @@ function isDebuggableJson(text: string): boolean {
   }
 }
 
+/**
+ * 规范化「带注释的 JSON」文本：去掉行注释（//）与块注释（开斜杠星号…星号闭斜杠）、容忍尾逗号。
+ * 逐字符扫描，字符串内部（含转义）原样保留。
+ */
+function normalizeJsonText(text: string): string {
+  let out = "";
+  let inStr = false;
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (inStr) {
+      out += ch;
+      if (ch === "\\" && i + 1 < text.length) {
+        out += text[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === '"') inStr = false;
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && text[i + 1] === "*") {
+      const end = text.indexOf("*/", i + 2);
+      i = end < 0 ? text.length : end + 2;
+      continue;
+    }
+    if (ch === ",") {
+      let j = i + 1;
+      while (j < text.length && /\s/.test(text[j])) j++;
+      if (text[j] === "}" || text[j] === "]") {
+        out += " ";
+        i++;
+        continue;
+      }
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+/** JSON 值 → 结构树（「从 JSON 导入」用），键名成为字段 key、原值成为示例值 */
+function valueToJsonBody(value: unknown): JsonBody {
+  return { root: valueToBodyField(value) };
+}
+
+function valueToBodyField(value: unknown): BodyField {
+  const f = newBodyField("");
+  if (value === null) {
+    f.type = "null";
+    return f;
+  }
+  if (Array.isArray(value)) {
+    f.type = "array";
+    f.items = value.length > 0 ? valueToBodyField(value[0]) : newBodyField("");
+    return f;
+  }
+  if (typeof value === "object") {
+    f.type = "object";
+    f.children = Object.entries(value as Record<string, unknown>).map(([k, v]) => {
+      const c = valueToBodyField(v);
+      c.key = k;
+      return c;
+    });
+    return f;
+  }
+  f.example = String(value);
+  switch (typeof value) {
+    case "boolean":
+      f.type = "boolean";
+      break;
+    case "number":
+      f.type = Number.isInteger(value) ? "integer" : "number";
+      break;
+    default:
+      f.type = "string";
+  }
+  return f;
+}
+
 export function InterfaceEditor({
   doc,
   onSave,
   onSend,
   onModeChange,
   host = "",
+  defaultMode,
 }: {
   doc: InterfaceFile;
   onSave: (doc: InterfaceFile) => Promise<void>;
@@ -61,9 +152,11 @@ export function InterfaceEditor({
   onModeChange?: (mode: EditorMode) => void;
   /** 当前激活环境 host（未配置时为空串：不发送并提示到环境管理中配置） */
   host?: string;
+  /** 打开标签时的初始模式（新建接口后直接进编辑态），仅在首次挂载/切换接口时生效 */
+  defaultMode?: EditorMode | null;
 }) {
   const [base, setBase] = useState<InterfaceFile>({ ...doc });
-  const [mode, setMode] = useState<EditorMode>("doc");
+  const [mode, setMode] = useState<EditorMode>(defaultMode ?? "doc");
   const [tab, setTab] = useState<Tab>("params");
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -86,6 +179,10 @@ export function InterfaceEditor({
     setDirty(false);
     setSaved(false);
     setDebugJson(null);
+    if (defaultMode) {
+      setMode(defaultMode);
+      onModeChange?.(defaultMode);
+    }
   }
 
   const update = (patch: Partial<InterfaceFile>) => {
@@ -542,10 +639,28 @@ export function BodyEditor({
   showAutoGenerate?: boolean;
 }) {
   const [preview, setPreview] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [importErr, setImportErr] = useState("");
   /** 调试 JSON 文本：未编辑时由文档结构树（或旧 content）生成 */
   const debugText = debugJson ?? (body.mode === "json" ? initialDebugJson(body) : "");
   const debugJsonValid = isDebuggableJson(debugText);
   const autoGenerate = () => onDebugJsonChange(initialDebugJson(body));
+
+  /** 从 JSON 文本导入结构树：去注释/尾逗号后解析，覆盖当前结构树 */
+  const doJsonImport = () => {
+    let value: unknown;
+    try {
+      value = JSON.parse(normalizeJsonText(importText));
+    } catch (e) {
+      setImportErr(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    onChange({ ...body, json: valueToJsonBody(value) });
+    setImportOpen(false);
+    setImportText("");
+    setImportErr("");
+  };
   return (
     <div className="space-y-3">
       {/* Body 格式（分段按钮，Apifox 风格） */}
@@ -575,6 +690,16 @@ export function BodyEditor({
               >
                 {preview ? <PencilLine className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                 {preview ? "编辑" : "预览 JSON"}
+              </Button>
+            )}
+            {!debugMode && (
+              <Button
+                size="sm"
+                variant="ghost"
+                title="从 JSON 文本导入到结构树（支持 // 与 /* */ 注释、尾逗号）"
+                onClick={() => setImportOpen(true)}
+              >
+                <Upload className="h-3.5 w-3.5" /> 从 JSON 导入
               </Button>
             )}
           </>
@@ -661,6 +786,29 @@ export function BodyEditor({
       {body.mode === "none" && (
         <p className="text-xs text-muted-foreground">无请求体。</p>
       )}
+
+      <Dialog open={importOpen} onClose={() => setImportOpen(false)} title="从 JSON 导入" className="w-[560px]">
+        <div className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            粘贴 JSON 文本（支持 {"//"} 与 {"/* */"} 注释、尾逗号，{"{{变量}}"} 会作为字符串原样保留），导入后将覆盖下方的结构树。
+          </p>
+          <textarea
+            className="h-64 w-full resize-y rounded-md border border-border bg-muted p-2.5 font-mono text-xs text-foreground outline-none focus:border-ring"
+            value={importText}
+            onChange={(e) => {
+              setImportText(e.target.value);
+              setImportErr("");
+            }}
+            spellCheck={false}
+            placeholder={'输入 JSON，如：\n{\n  // 登录参数\n  "name": "{{userName}}",\n  "age": 18,\n}'}
+          />
+          {importErr && <p className="text-xs text-red-400">JSON 解析失败：{importErr}</p>}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setImportOpen(false)}>取消</Button>
+            <Button onClick={doJsonImport}>导入</Button>
+          </DialogFooter>
+        </div>
+      </Dialog>
     </div>
   );
 }

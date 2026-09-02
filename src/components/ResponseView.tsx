@@ -57,15 +57,17 @@ export function ResponseView({
   }
 
   const res = outcome.res;
-  let body = res.body;
+  // 是否为 JSON 由响应内容决定，与「格式化」开关无关（否则取消勾选后开关会消失）
   let okJson = false;
-  if (pretty) {
-    try {
-      body = JSON.stringify(JSON.parse(res.body), null, 2);
-      okJson = true;
-    } catch {
-      body = res.body;
-    }
+  try {
+    JSON.parse(res.body);
+    okJson = true;
+  } catch {
+    // 非 JSON 响应体
+  }
+  let body = res.body;
+  if (okJson && pretty) {
+    body = JSON.stringify(JSON.parse(res.body), null, 2);
   }
 
   const copy = async () => {

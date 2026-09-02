@@ -73,9 +73,20 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
 
   const activeTabObj = proj?.openTabs.find((t) => t.id === proj.activeTab);
   const activeDoc = activeTabObj ? proj.docs[activeTabObj.id] : undefined;
+  const openInEdit = !!proj?.openInEditId && proj.openInEditId === activeTabObj?.id;
   const showResponse = sendState.kind === "done" && editorMode === "debug";
   const activeEnvName = envs.find((e) => e.id === activeEnv)?.name ?? activeEnv;
   const activeHost = envs.find((e) => e.id === activeEnv)?.host ?? "";
+
+  // 新建接口的标签已进入编辑态，清除一次性标记
+  useEffect(() => {
+    if (!openInEdit) return;
+    useProject.setState((s) => {
+      const st = s.states[tabId];
+      if (!st?.openInEditId) return {};
+      return { states: { ...s.states, [tabId]: { ...st, openInEditId: null } } };
+    });
+  }, [openInEdit, tabId]);
 
   const handleSend = async (doc: Parameters<typeof api.sendRequest>[3]) => {
     setSendState({ kind: "loading" });
@@ -270,6 +281,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
               <InterfaceEditor
                 doc={activeDoc}
                 host={activeHost}
+                defaultMode={openInEdit ? "edit" : undefined}
                 onSave={(doc) => saveDoc(tabId, teamKey, projectKey, activeTabObj.groupPath, activeTabObj.key, doc)}
                 onSend={(doc) => void handleSend(doc)}
                 onModeChange={setEditorMode}
@@ -371,7 +383,11 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
         projectKey={projectKey}
         activeId={activeEnv}
         open={showEnvSettings}
-        onClose={() => setShowEnvSettings(false)}
+        onClose={() => {
+          setShowEnvSettings(false);
+          // 关闭时重新拉取环境列表，保证保存的 host/变量立即反映到编辑器
+          void loadEnvs();
+        }}
         onChanged={(id) => {
           setActiveEnv(id);
           void loadEnvs();

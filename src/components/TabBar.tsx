@@ -21,7 +21,7 @@ export function TabBar() {
     <div className="flex h-9 shrink-0 items-stretch border-b border-border bg-muted">
       <button
         className={cn(
-          "flex items-center gap-1.5 px-4 text-sm transition-colors cursor-pointer border-r border-border",
+          "flex items-center gap-1.5 px-4 text-sm transition-colors cursor-pointer select-none border-r border-border",
           activeTab === MAIN_TAB_ID
             ? "bg-background text-accent"
             : "text-muted-foreground hover:bg-muted",
@@ -40,7 +40,7 @@ export function TabBar() {
           <div
             key={id}
             className={cn(
-              "group relative flex max-w-[220px] items-center gap-1 border-r border-border px-3 cursor-pointer transition-colors",
+              "group relative flex max-w-[220px] items-center gap-1 border-r border-border px-3 cursor-pointer select-none transition-colors",
               active
                 ? "bg-background text-foreground"
                 : "text-muted-foreground hover:bg-muted",

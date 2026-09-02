@@ -149,7 +149,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
             {menuOpen && (
               <div className="absolute right-0 top-8 z-50 w-40 overflow-hidden rounded-md border border-border bg-muted shadow-xl">
                 <button
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer select-none"
                   onClick={() => {
                     setDlg({ kind: "createIface", groupPath: [] });
                     setMenuOpen(false);
@@ -158,7 +158,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
                   <FilePlus2 className="h-4 w-4" /> 新建接口
                 </button>
                 <button
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer select-none"
                   onClick={() => {
                     setDlg({ kind: "createGroup", parentPath: [] });
                     setMenuOpen(false);
@@ -168,13 +168,13 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
                 </button>
                 <div className="my-1 h-px bg-border" />
                 <button
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer select-none"
                   onClick={() => openImportExport("import")}
                 >
                   <Upload className="h-4 w-4" /> 导入
                 </button>
                 <button
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-border cursor-pointer select-none"
                   onClick={() => openImportExport("export")}
                 >
                   <Download className="h-4 w-4" /> 导出
@@ -217,7 +217,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
       {/* 右侧：接口定义 / 调试 */}
       <main className="flex min-w-0 flex-1 flex-col">
         {/* 项目上下文行：项目定位 + 环境选择 + 环境设置 */}
-        <div className="flex h-9 shrink-0 items-center border-b border-border text-sm">
+        <div className="flex h-9 shrink-0 items-center border-b border-border text-sm select-none">
           <span className="px-4 text-muted-foreground">{teamKey} / {projectKey}</span>
           <div className="ml-auto flex h-full items-center pl-3">
             <select
@@ -246,7 +246,7 @@ export function ProjectPage({ teamKey, projectKey }: { teamKey: string; projectK
             <div
               key={tab.id}
               className={cn(
-                "group relative flex max-w-[200px] cursor-pointer items-center gap-1 border-r border-border px-3",
+                "group relative flex max-w-[200px] cursor-pointer items-center gap-1 border-r border-border px-3 select-none",
                 proj.activeTab === tab.id ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted",
               )}
               onClick={() => setActive(tabId, tab.id)}

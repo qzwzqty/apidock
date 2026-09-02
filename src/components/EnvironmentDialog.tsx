@@ -178,7 +178,7 @@ export function EnvironmentDialog({
               <div
                 key={s.id}
                 className={cn(
-                  "group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+                  "group flex cursor-pointer select-none items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
                   target.kind === "env" && target.id === s.id
                     ? "bg-accent/15 text-accent"
                     : "text-foreground hover:bg-muted",
@@ -210,7 +210,7 @@ export function EnvironmentDialog({
               </div>
             ))}
             <button
-              className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              className="flex w-full cursor-pointer select-none items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               onClick={addEnv}
             >
               <Plus className="h-3.5 w-3.5" /> 新建环境
@@ -323,7 +323,7 @@ function SideItem({
   return (
     <button
       className={cn(
-        "flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 text-sm transition-colors",
+        "flex w-full cursor-pointer select-none items-center gap-2.5 rounded-md px-2 py-1.5 text-sm transition-colors",
         active ? "bg-accent/15 text-accent" : "text-foreground hover:bg-muted",
       )}
       onClick={onClick}
@@ -361,7 +361,7 @@ function GlobalParamsEditor({
           <button
             key={t.key}
             className={cn(
-              "h-8 cursor-pointer border-b-2 px-3 text-sm transition-colors",
+              "h-8 cursor-pointer select-none border-b-2 px-3 text-sm transition-colors",
               tab === t.key
                 ? "border-accent text-accent"
                 : "border-transparent text-muted-foreground hover:text-foreground",

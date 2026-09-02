@@ -139,7 +139,7 @@ function EditableRequest({
         ).map(([k, label]) => (
           <button
             key={k}
-            className={`flex h-full cursor-pointer items-center gap-1.5 border-r border-border px-3 transition-colors ${
+            className={`flex h-full cursor-pointer select-none items-center gap-1.5 border-r border-border px-3 transition-colors ${
               tab === k ? "text-accent" : "text-muted-foreground hover:text-foreground"
             }`}
             onClick={() => setTab(k)}

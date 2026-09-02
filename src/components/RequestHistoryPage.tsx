@@ -144,7 +144,7 @@ function HistoryRow({
   return (
     <div
       className={cn(
-        "group relative flex cursor-pointer flex-col gap-1 rounded-md border-l-2 px-2 py-1.5 transition-colors",
+        "group relative flex cursor-pointer select-none flex-col gap-1 rounded-md border-l-2 px-2 py-1.5 transition-colors",
         active ? "border-accent bg-accent/10" : "border-transparent hover:bg-muted",
       )}
       onClick={onClick}

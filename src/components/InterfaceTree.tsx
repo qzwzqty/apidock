@@ -249,7 +249,7 @@ function MenuItem({
 }) {
   return (
     <button
-      className={`flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:bg-border ${
+      className={`flex w-full cursor-pointer select-none items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:bg-border ${
         danger ? "text-red-400" : "text-foreground"
       }`}
       onClick={onClick}

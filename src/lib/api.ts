@@ -175,10 +175,27 @@ export interface InterfaceFile {
   variables: KeyValue[];
   assertions: Assertion[];
   description: string;
+  responses: ResponseDef[];
   timeoutMs?: number | null;
   redirectLimit?: number | null;
   tlsVerify?: boolean | null;
   caCertPath?: string | null;
+}
+
+/** 接口响应定义（文档化：状态码 + 说明 + 响应体结构） */
+export interface ResponseDef {
+  statusCode: string;
+  description: string;
+  /** 响应体 Media Type（空 = 无响应体） */
+  contentType: string;
+  /** json 模式的响应体结构树 */
+  json: JsonBody;
+  /** 非 json 模式的响应体示例文本 */
+  content: string;
+}
+
+export function newResponseDef(statusCode = "200"): ResponseDef {
+  return { statusCode, description: "", contentType: "application/json", json: newJsonBody("object"), content: "" };
 }
 
 export interface AssertionResult {
@@ -423,7 +440,7 @@ export const api = {
 };
 
 /** 标签页配置数量（标题徽标用，与 InterfaceEditor 的 Tab 一一对应） */
-export type ConfigTab = "params" | "headers" | "body" | "auth" | "vars" | "assert" | "desc";
+export type ConfigTab = "params" | "headers" | "body" | "auth" | "vars" | "assert" | "desc" | "resp";
 
 /**
  * 统计各区块「已配置」的数量：
@@ -457,5 +474,6 @@ export function configCounts(doc: InterfaceFile): Record<ConfigTab, number> {
   const vars = doc.variables.filter((v) => v.key.trim()).length;
   const assert = doc.assertions.length;
   const desc = doc.description.trim() ? 1 : 0;
-  return { params, headers, body, auth, vars, assert, desc };
+  const resp = doc.responses.filter((r) => r.statusCode.trim()).length;
+  return { params, headers, body, auth, vars, assert, desc, resp };
 }

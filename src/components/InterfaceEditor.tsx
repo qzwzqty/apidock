@@ -1,8 +1,8 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { marked } from "marked";
 import { Save, Send, Check, SlidersHorizontal, RotateCcw, Plus, Trash2, Eye, PencilLine, ChevronRight, ChevronDown, Wand2, Upload } from "lucide-react";
-import type { ApiParam, Assertion, BodyField, InterfaceFile, JsonBody, KeyValue } from "@/lib/api";
-import { isJsonBodyEmpty, newApiParam, newBodyField, jsonBodyToValue, configCounts } from "@/lib/api";
+import type { ApiParam, Assertion, BodyField, InterfaceFile, JsonBody, KeyValue, ResponseDef } from "@/lib/api";
+import { isJsonBodyEmpty, newApiParam, newBodyField, jsonBodyToValue, configCounts, newResponseDef } from "@/lib/api";
 import { METHODS, methodColor } from "@/lib/methods";
 import { splitUrlPath, buildTemplateUrl, normalizeUrlForSend, HOST_TEMPLATE } from "@/lib/url";
 import { Button } from "@/components/ui/button";
@@ -27,7 +27,7 @@ const BODY_MODES: [string, string][] = [
   ["file", "文件"],
 ];
 
-export type Tab = "params" | "headers" | "body" | "auth" | "vars" | "assert" | "desc";
+export type Tab = "params" | "headers" | "body" | "auth" | "vars" | "assert" | "desc" | "resp";
 
 /** 调试模式 JSON 初始文本：由文档结构树生成示例（树为空时回落旧 content） */
 function initialDebugJson(body: InterfaceFile["body"]): string {
@@ -340,6 +340,7 @@ export function InterfaceEditor({
               ["auth", "鉴权"],
               ["vars", "变量"],
               ["assert", "断言"],
+              ["resp", "响应"],
               ["desc", "说明"],
             ] as [Tab, string][]
           ).map(([k, label]) => (
@@ -394,6 +395,12 @@ export function InterfaceEditor({
           <KvList rows={base.variables} onChange={(list) => updateKv("variables", list)} />
         )}
         {tab === "assert" && <AssertionEditor rows={base.assertions} onChange={updateAssertions} />}
+        {tab === "resp" && (
+          <ResponseList
+            rows={base.responses}
+            onChange={(list) => update({ responses: list })}
+          />
+        )}
         {tab === "desc" && (
           <div>
             <div className="mb-1 flex items-center justify-between">
@@ -1209,6 +1216,84 @@ function OpSel({ value, onChange }: { value: string; onChange: (op: string) => v
   );
 }
 
+/** 响应定义列表：状态码 + 说明 + 响应体（json 结构树 / 文本示例） */
+export function ResponseList({
+  rows,
+  onChange,
+}: {
+  rows: ResponseDef[];
+  onChange: (rows: ResponseDef[]) => void;
+}) {
+  const setRow = (i: number, patch: Partial<ResponseDef>) =>
+    onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  return (
+    <div className="space-y-3">
+      {rows.map((row, i) => (
+        <div key={i} className="rounded-md border border-border p-2.5">
+          <div className="flex items-center gap-2">
+            <Input
+              className="h-7 w-20 font-mono"
+              placeholder="状态码"
+              value={row.statusCode}
+              title="如 200 / 404 / 2XX / default"
+              onChange={(e) => setRow(i, { statusCode: e.target.value })}
+            />
+            <Input
+              className="h-7 flex-1"
+              placeholder="响应说明（如 登录成功）"
+              value={row.description}
+              onChange={(e) => setRow(i, { description: e.target.value })}
+            />
+            <select
+              className="h-7 w-44 rounded-md border border-border bg-muted px-1.5 text-xs outline-none focus:border-ring cursor-pointer"
+              value={row.contentType}
+              title="响应体 Media Type（无 = 仅状态码+说明）"
+              onChange={(e) => {
+                const ct = e.target.value;
+                const next: Partial<ResponseDef> = { contentType: ct };
+                if (ct === "" && row.contentType) next.content = "";
+                setRow(i, next);
+              }}
+            >
+              <option value="application/json">application/json</option>
+              <option value="text/plain">text/plain</option>
+              <option value="text/xml">text/xml</option>
+              <option value="text/html">text/html</option>
+              <option value="">无响应体</option>
+            </select>
+            <Button size="icon" variant="ghost" title="删除该响应"
+              onClick={() => onChange(rows.filter((_, j) => j !== i))}>
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+          {row.contentType.includes("json") && (
+            <div className="mt-2">
+              <JsonBodyEditor json={row.json} onChange={(json) => setRow(i, { json })} />
+            </div>
+          )}
+          {row.contentType !== "" && !row.contentType.includes("json") && (
+            <textarea
+              className="mt-2 h-28 w-full resize-y rounded-md border border-border bg-muted p-2.5 font-mono text-xs text-foreground outline-none focus:border-ring"
+              value={row.content}
+              placeholder="响应体示例文本"
+              spellCheck={false}
+              onChange={(e) => setRow(i, { content: e.target.value })}
+            />
+          )}
+        </div>
+      ))}
+      <Button size="sm" variant="ghost" onClick={() => onChange([...rows, newResponseDef()])}>
+        <Plus className="h-3.5 w-3.5" /> 添加响应
+      </Button>
+      {rows.length === 0 && (
+        <p className="text-xs text-muted-foreground">
+          暂无响应定义。定义接口的返回状态码与响应体结构，保存后成为文档并在导出 OpenAPI 时生成 responses。
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** 文档（只读）视图：Apifox 风格，仅展示接口文档内容 */
 function DocView({ doc }: { doc: InterfaceFile }) {
   const hasJson = doc.body.mode === "json" && !isJsonBodyEmpty(doc.body.json);
@@ -1259,6 +1344,41 @@ function DocView({ doc }: { doc: InterfaceFile }) {
           <p className="font-mono text-sm text-foreground">{doc.body.filePath || "（未设置文件路径）"}</p>
         )}
         {doc.body.mode === "none" && <p className="text-sm text-muted-foreground">无请求体。</p>}
+      </DocSection>
+
+      <DocSection title="响应" count={doc.responses.length}>
+        {doc.responses.length > 0 ? (
+          <div className="space-y-2">
+            {doc.responses.map((r, i) => {
+              const hasJson = r.contentType.includes("json") && !isJsonBodyEmpty(r.json);
+              return (
+                <div key={i} className="rounded-md border border-border p-2.5">
+                  <div className="flex items-baseline gap-2">
+                    <span className="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 font-mono text-xs font-bold text-accent">
+                      {r.statusCode || "—"}
+                    </span>
+                    {r.description && <span className="min-w-0 truncate text-sm text-foreground">{r.description}</span>}
+                    {r.contentType && (
+                      <span className="shrink-0 text-[11px] text-muted-foreground">{r.contentType}</span>
+                    )}
+                  </div>
+                  {hasJson && (
+                    <pre className="mt-2 overflow-auto rounded-md border border-border bg-muted p-3 font-mono text-xs text-foreground">
+                      {JSON.stringify(jsonBodyToValue(r.json), null, 2)}
+                    </pre>
+                  )}
+                  {!r.contentType.includes("json") && r.content && (
+                    <pre className="mt-2 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted p-3 font-mono text-xs text-foreground">
+                      {r.content}
+                    </pre>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">暂无响应定义。</p>
+        )}
       </DocSection>
 
       <DocSection title="鉴权">

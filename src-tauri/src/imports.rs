@@ -14,6 +14,7 @@ pub struct ImportedIface {
     pub headers: Vec<domain::ApiParam>,
     pub query: Vec<domain::ApiParam>,
     pub body: domain::Body,
+    pub responses: Vec<domain::ResponseDef>,
     pub auth: domain::Auth,
     pub description: String,
 }
@@ -671,6 +672,23 @@ pub fn parse_openapi(content: &str, is_yaml: bool) -> Result<(String, Vec<Import
                     }
             }
 
+            // 响应定义：responses（含 default 与 2XX 等范围码）
+            let mut responses: Vec<domain::ResponseDef> = Vec::new();
+            let mut seen_resp = std::collections::HashSet::new();
+            if let Some(r) = op.responses.default.as_ref()
+                && let Some(resp) = resolve_response(r, &components)
+            {
+                responses.push(response_to_def(resp, "default", &components));
+            }
+            for (code, r) in &op.responses.responses {
+                if let Some(resp) = resolve_response(r, &components) {
+                    let key = code.to_string();
+                    if seen_resp.insert(key.clone()) {
+                        responses.push(response_to_def(resp, &key, &components));
+                    }
+                }
+            }
+
             let mut auth = domain::Auth::default();
             if let Some(kind) = &security_required {
                 match kind.as_str() {
@@ -726,6 +744,7 @@ pub fn parse_openapi(content: &str, is_yaml: bool) -> Result<(String, Vec<Import
                 headers,
                 query,
                 body,
+                responses,
                 auth,
                 description,
             });
@@ -772,6 +791,63 @@ fn resolve_request_body<'a>(
             c.request_bodies.get(name)?.as_item()
         }
     }
+}
+
+/// 解析 `#/components/responses/...` 引用
+fn resolve_response<'a>(
+    r: &'a openapiv3::ReferenceOr<openapiv3::Response>,
+    c: &'a openapiv3::Components,
+) -> Option<&'a openapiv3::Response> {
+    match r {
+        openapiv3::ReferenceOr::Item(resp) => Some(resp),
+        openapiv3::ReferenceOr::Reference { reference } => {
+            let name = reference.strip_prefix("#/components/responses/")?;
+            c.responses.get(name)?.as_item()
+        }
+    }
+}
+
+/// OpenAPI Response → 本项目 ResponseDef（仅取首个媒体类型的响应体结构）
+fn response_to_def(resp: &openapiv3::Response, status_code: &str, components: &openapiv3::Components) -> domain::ResponseDef {
+    let mut def = domain::ResponseDef {
+        status_code: status_code.to_string(),
+        description: resp.description.clone(),
+        ..Default::default()
+    };
+    if let Some((ct, media)) = resp.content.iter().next() {
+        def.content_type = ct.clone();
+        let example = media
+            .example
+            .clone()
+            .or_else(|| {
+                media.examples.iter().next().and_then(|(_, e)| match e {
+                    openapiv3::ReferenceOr::Item(ex) => ex.value.clone(),
+                    _ => None,
+                })
+            })
+            .or_else(|| media.schema.as_ref().and_then(|rs| schema_ref_example(rs, components)));
+        if ct.contains("json") {
+            def.json = media
+                .schema
+                .as_ref()
+                .and_then(|rs| resolve_schema_ref(rs, components))
+                .map(|s| typed_schema_to_json_body(s, components))
+                .unwrap_or_default();
+            if def.json.is_empty()
+                && let Some(v) = example
+            {
+                def.json = json_value_to_body(&v.to_string());
+            }
+        } else {
+            def.content = example
+                .map(|v| match v {
+                    Value::String(s) => s,
+                    other => other.to_string(),
+                })
+                .unwrap_or_default();
+        }
+    }
+    def
 }
 
 /// 参数 → 本项目 ApiParam（query/header；path/cookie 由调用方过滤）
@@ -954,6 +1030,7 @@ fn walk_postman_items(items: &Value, base: Vec<String>) -> Vec<ImportedIface> {
                     headers,
                     query,
                     body,
+                    responses: Vec::new(),
                     auth: domain::Auth::default(),
                     description: String::new(),
                 });
@@ -1055,6 +1132,7 @@ pub async fn import_into_project(
         f.headers = iface.headers.clone();
         f.query = iface.query.clone();
         f.body = iface.body.clone();
+        f.responses = iface.responses.clone();
         f.auth = iface.auth.clone();
         f.description = iface.description.clone();
         items.push(crate::db::repo::ImportItem {
@@ -1213,7 +1291,7 @@ fn build_interface_operation(
         "operationId": format!("{}-{}", proj, key),
         "summary": iface.name,
         "parameters": parameters,
-        "responses": { "200": { "description": "成功" } }
+        "responses": export_responses(iface)
     });
     if !iface.description.is_empty() {
         operation["description"] = json!(iface.description);
@@ -1256,6 +1334,50 @@ fn build_interface_operation(
         warnings.push(format!("接口 {} 的 URL 为空", iface.name));
     }
     (iface.method.to_lowercase(), path_str, operation, host)
+}
+
+/// 接口响应定义 → OpenAPI responses 对象（未定义时回落默认 200）
+fn export_responses(iface: &crate::domain::InterfaceFile) -> Value {
+    let mut map = serde_json::Map::new();
+    if iface.responses.is_empty() {
+        map.insert("200".into(), json!({ "description": "成功" }));
+        return Value::Object(map);
+    }
+    for r in &iface.responses {
+        if r.status_code.trim().is_empty() {
+            continue;
+        }
+        let mut resp = json!({ "description": r.description });
+        let ct = r.content_type.trim();
+        if !ct.is_empty() {
+            let mut content = serde_json::Map::new();
+            if ct.contains("json") {
+                let mut schema = if !r.json.is_empty() {
+                    schema_of_json_body(&r.json)
+                } else if !r.content.trim().is_empty() {
+                    serde_json::from_str::<Value>(&r.content).unwrap_or(json!({}))
+                } else {
+                    json!({})
+                };
+                if !r.content.trim().is_empty()
+                    && let Ok(ex) = serde_json::from_str::<Value>(&r.content)
+                    && !ex.is_null()
+                {
+                    schema["example"] = ex;
+                }
+                content.insert(ct.to_string(), json!({ "schema": schema }));
+            } else {
+                let mut schema = json!({ "type": "string" });
+                if !r.content.trim().is_empty() {
+                    schema["example"] = json!(r.content);
+                }
+                content.insert(ct.to_string(), json!({ "schema": schema }));
+            }
+            resp["content"] = Value::Object(content);
+        }
+        map.insert(r.status_code.trim().to_string(), resp);
+    }
+    Value::Object(map)
 }
 
 /// OpenAPI 3.0 文档组装（openapi / info / paths / components / servers）
@@ -1536,6 +1658,71 @@ mod tests {
         let (_, list) = parse_openapi(&out.content, false).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].url, "https://api.example.com/v1/users");
+    }
+
+    #[test]
+    fn openapi_import_export_responses_roundtrip() {
+        let spec = r##"{
+  "openapi": "3.0.3",
+  "info": { "title": "t", "version": "1" },
+  "components": {
+    "responses": {
+      "BadRequest": { "description": "参数校验失败", "content": { "application/json": { "schema": { "type": "object", "properties": { "error": { "type": "string" } } } } } }
+    }
+  },
+  "paths": {
+    "/a": {
+      "get": {
+        "summary": "查列表",
+        "responses": {
+          "200": { "description": "成功", "content": { "application/json": { "schema": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "integer" } } } } } } },
+          "404": { "description": "未找到" },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    }
+  }
+}"##;
+        let (_, list) = parse_openapi(spec, false).unwrap();
+        let get = &list[0];
+        assert_eq!(get.responses.len(), 3);
+        let r200 = get.responses.iter().find(|r| r.status_code == "200").unwrap();
+        assert_eq!(r200.content_type, "application/json");
+        assert_eq!(r200.json.root.field_type, "array");
+        assert_eq!(r200.json.root.items.as_ref().unwrap().children[0].key, "id");
+        let r400 = get.responses.iter().find(|r| r.status_code == "400").unwrap();
+        assert_eq!(r400.description, "参数校验失败");
+        assert_eq!(r400.json.root.children[0].key, "error");
+        let r404 = get.responses.iter().find(|r| r.status_code == "404").unwrap();
+        assert!(r404.content_type.is_empty());
+
+        // 导出往返：responses 应出现在 OpenAPI 输出中
+        let mut f = get.to_file();
+        f.name = get.name.clone();
+        f.method = get.method.clone();
+        f.url = get.url.clone();
+        f.headers = get.headers.clone();
+        f.query = get.query.clone();
+        f.body = get.body.clone();
+        f.responses = get.responses.clone();
+        f.auth = get.auth.clone();
+        f.description = get.description.clone();
+        let mut warnings = Vec::new();
+        let (_, _, operation, _) = build_interface_operation(&f, "p", &get.key, &mut warnings);
+        assert!(operation["responses"].get("200").is_some());
+        assert_eq!(
+            operation["responses"]["200"]["content"]["application/json"]["schema"]["type"],
+            "array"
+        );
+        assert!(operation["responses"].get("404").is_some());
+        assert!(operation["responses"].get("400").is_some());
+
+        // 未定义响应时导出回落默认 200
+        let mut g = get.to_file();
+        g.name = get.name.clone();
+        let (_, _, op2, _) = build_interface_operation(&g, "p", &get.key, &mut warnings);
+        assert!(op2["responses"].get("200").is_some());
+        assert!(op2["responses"].get("400").is_none());
     }
 
     #[test]

@@ -1,0 +1,30 @@
+# 自动生成的 Release 说明归类规则（GitHub Release Notes API）。
+# 按 PR 的标签归类；未命中任何标签的 PR 落入「其他变更」，不会丢内容。
+# 标签只是可选的组织手段：不加标签时，一切都归入最后一类。
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+    authors:
+      - dependabot
+      - github-actions
+  categories:
+    - title: 🚀 新功能
+      labels:
+        - feature
+        - enhancement
+        - 新功能
+    - title: 🐛 问题修复
+      labels:
+        - bug
+        - fix
+        - bugfix
+        - 修复
+    - title: 📚 文档
+      labels:
+        - documentation
+        - docs
+        - 文档
+    - title: 🧰 其他变更
+      labels:
+        - '*'

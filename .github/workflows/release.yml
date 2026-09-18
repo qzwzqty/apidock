@@ -1,0 +1,90 @@
+name: Release
+
+# 推送 v* 标签自动发布；也可在 Actions 页面手动触发并填入标签
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '发布标签，需与 src-tauri/tauri.conf.json 的 version 一致（如 v0.2.0）'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 编译打包并发布
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: 解析并校验版本与标签
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          if [ "$TAG" != "v$VERSION" ] && [ "$TAG" != "$VERSION" ]; then
+            echo "::error::标签 $TAG 与 src-tauri/tauri.conf.json 的 version（$VERSION）不一致，请先改版本号或改用正确的标签。"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "版本 $VERSION，标签 $TAG"
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 打包并创建 Release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ steps.meta.outputs.tag }}
+          releaseName: Apidock ${{ steps.meta.outputs.version }}
+          # 由 GitHub 的 Release Notes API 自动生成说明，配合 .github/release.yml 分类
+          generateReleaseNotes: true
+          releaseDraft: false
+          prerelease: false
+          releaseBody: |
+            ### 下载
+
+            - `Apidock_${{ steps.meta.outputs.version }}_x64-setup.exe`：NSIS 安装包，推荐使用。
+            - `apidock.exe`：免安装的绿色版，可直接运行。
+
+            安装包未签名，首次运行如遇 SmartScreen 提示，选择「更多信息 → 仍要运行」即可。
+
+      - name: 上传绿色版可执行文件
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          EXE=src-tauri/target/release/apidock.exe
+          if [ ! -f "$EXE" ]; then
+            echo "::error::未找到绿色版可执行文件 $EXE"
+            exit 1
+          fi
+          gh release upload "${{ steps.meta.outputs.tag }}" "$EXE" --clobber

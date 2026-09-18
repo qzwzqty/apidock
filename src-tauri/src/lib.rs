@@ -1,0 +1,1307 @@
+mod assertions;
+mod db;
+mod domain;
+mod http;
+mod imports;
+mod runner;
+mod variables;
+
+use db::repo;
+use domain::{
+    EnvironmentFile, HistoryRecord, HistorySummary, InterfaceFile, ProjectInfo, ProjectSettings,
+    TeamInfo, TreeNode, WorkspaceState,
+};
+use sea_orm::DatabaseConnection;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use tauri::State;
+
+pub struct AppState {
+    db: Mutex<Option<DatabaseConnection>>,
+    cookiejar: Arc<reqwest::cookie::Jar>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            db: Mutex::new(None),
+            cookiejar: Arc::new(reqwest::cookie::Jar::default()),
+        }
+    }
+}
+
+/// 一次会话的初始快照：团队列表 + 标签栏状态
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSession {
+    pub teams: Vec<TeamInfo>,
+    pub workspace: WorkspaceState,
+}
+
+// ----- 会话 / 数据根 -----
+
+#[tauri::command]
+async fn get_session(state: State<'_, AppState>) -> Result<AppSession, String> {
+    ensure_open(&state).await?;
+    build_session(&state).await
+}
+
+/// 若数据库未打开则打开固定的默认数据根 <home>/.apidock（自动创建）
+async fn ensure_open(state: &AppState) -> Result<(), String> {
+    let already = state.db.lock().unwrap().is_some();
+    if already {
+        return Ok(());
+    }
+    let root = default_data_root().ok_or("无法确定用户主目录")?;
+    let db = db::open(&root).await?;
+    *state.db.lock().unwrap() = Some(db);
+    Ok(())
+}
+
+/// 默认数据根目录：`<用户主目录>/.apidock`（主目录路径随操作系统而定）
+fn default_data_root() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".apidock"))
+}
+
+fn with_db(state: &AppState) -> Result<DatabaseConnection, String> {
+    state
+        .db
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "数据尚未就绪".to_string())
+}
+
+async fn build_session(state: &AppState) -> Result<AppSession, String> {
+    let db = state.db.lock().unwrap().clone();
+    match db {
+        Some(db) => Ok(AppSession {
+            teams: repo::list_teams(&db).await,
+            workspace: repo::get_workspace(&db).await,
+        }),
+        None => Ok(AppSession {
+            teams: Vec::new(),
+            workspace: WorkspaceState::new(),
+        }),
+    }
+}
+
+// ----- 团队 / 项目 -----
+
+#[tauri::command]
+async fn list_teams(state: State<'_, AppState>) -> Result<Vec<TeamInfo>, String> {
+    let db = with_db(&state)?;
+    Ok(repo::list_teams(&db).await)
+}
+
+#[tauri::command]
+async fn list_projects(
+    state: State<'_, AppState>,
+    team_key: String,
+) -> Result<Vec<ProjectInfo>, String> {
+    let db = with_db(&state)?;
+    Ok(repo::list_projects(&db, &team_key).await)
+}
+
+#[tauri::command]
+async fn create_team(
+    state: State<'_, AppState>,
+    name: String,
+    description: Option<String>,
+) -> Result<TeamInfo, String> {
+    let db = with_db(&state)?;
+    let name = domain::validate_name(&name)?;
+    if repo::list_teams(&db).await.iter().any(|t| t.key == name) {
+        return Err("已存在同名团队".into());
+    }
+    let team = repo::create_team(&db, &name, &name).await?;
+    if let Some(desc) = description {
+        if !desc.trim().is_empty() {
+            repo::set_team_description(&db, &name, desc.trim()).await?;
+        }
+    }
+    Ok(team)
+}
+
+#[tauri::command]
+async fn create_project(
+    state: State<'_, AppState>,
+    team_key: String,
+    name: String,
+    description: Option<String>,
+) -> Result<ProjectInfo, String> {
+    let db = with_db(&state)?;
+    let name = domain::validate_name(&name)?;
+    if repo::list_projects(&db, &team_key)
+        .await
+        .iter()
+        .any(|p| p.key == name)
+    {
+        return Err("已存在同名项目".into());
+    }
+    let project = repo::create_project(&db, &team_key, &name, &name).await?;
+    if let Some(desc) = description {
+        if !desc.trim().is_empty() {
+            repo::set_project_description(&db, &team_key, &name, desc.trim()).await?;
+        }
+    }
+    Ok(project)
+}
+
+#[tauri::command]
+async fn delete_team(state: State<'_, AppState>, team_key: String) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::delete_team(&db, &team_key).await
+}
+
+#[tauri::command]
+async fn delete_project(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::delete_project(&db, &team_key, &project_key).await
+}
+
+#[tauri::command]
+async fn rename_team(
+    state: State<'_, AppState>,
+    team_key: String,
+    new_name: String,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    let new_name = domain::validate_name(&new_name)?;
+    if new_name != team_key && repo::list_teams(&db).await.iter().any(|t| t.key == new_name) {
+        return Err("已存在同名团队".into());
+    }
+    repo::rename_team(&db, &team_key, &new_name).await
+}
+
+#[tauri::command]
+async fn rename_project(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    new_name: String,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    let new_name = domain::validate_name(&new_name)?;
+    if new_name != project_key
+        && repo::list_projects(&db, &team_key)
+            .await
+            .iter()
+            .any(|p| p.key == new_name)
+    {
+        return Err("已存在同名项目".into());
+    }
+    repo::rename_project(&db, &team_key, &project_key, &new_name).await
+}
+
+/// 移动接口到目标分组；`before_key` 指定插入到同组某接口之前（None = 末尾），
+/// 因此同分组调用即实现拖拽排序。
+#[tauri::command]
+async fn move_interface(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    iface_key: String,
+    target_group_path: Vec<String>,
+    before_key: Option<String>,
+) -> Result<String, String> {
+    let db = with_db(&state)?;
+    repo::move_interface(
+        &db,
+        &team_key,
+        &project_key,
+        &group_path,
+        &iface_key,
+        &target_group_path,
+        before_key.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn move_group(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    target_group_path: Vec<String>,
+    before_key: Option<String>,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::move_group(
+        &db,
+        &team_key,
+        &project_key,
+        &group_path,
+        &target_group_path,
+        before_key.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn save_workspace(
+    state: State<'_, AppState>,
+    workspace: WorkspaceState,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::save_workspace(&db, &workspace).await
+}
+
+// ----- 接口 / 分组树 -----
+
+#[tauri::command]
+async fn list_interface_tree(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+) -> Result<Vec<TreeNode>, String> {
+    let db = with_db(&state)?;
+    Ok(repo::list_interface_tree(&db, &team_key, &project_key).await)
+}
+
+/// 取接口树下某分组路径下的直接子节点键（含分组键与接口键）
+fn dir_keys(nodes: &[TreeNode], at: &[String]) -> Vec<String> {
+    if at.is_empty() {
+        return nodes
+            .iter()
+            .map(|n| match n {
+                TreeNode::Group { key, .. } | TreeNode::Interface { key, .. } => key.clone(),
+            })
+            .collect();
+    }
+    for n in nodes {
+        if let TreeNode::Group { key, children, .. } = n {
+            if key == &at[0] {
+                return dir_keys(children, &at[1..]);
+            }
+        }
+    }
+    Vec::new()
+}
+
+#[tauri::command]
+async fn create_group(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    name: String,
+    description: Option<String>,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    let name = domain::validate_name(&name)?;
+    let keys = dir_keys(
+        &repo::list_interface_tree(&db, &team_key, &project_key).await,
+        &group_path,
+    );
+    if keys.contains(&name) {
+        return Err("已存在同名分组/接口".into());
+    }
+    repo::create_group(&db, &team_key, &project_key, &group_path, &name, &name).await?;
+    if let Some(desc) = description {
+        if !desc.trim().is_empty() {
+            repo::set_group_description(&db, &team_key, &project_key, &group_path, desc.trim())
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn rename_group(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    new_name: String,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    let new_name = domain::validate_name(&new_name)?;
+    let keys = dir_keys(
+        &repo::list_interface_tree(&db, &team_key, &project_key).await,
+        &group_path[..group_path.len().saturating_sub(1)],
+    );
+    if keys.iter().any(|k| {
+        k == &new_name && k != group_path.last().map(String::as_str).unwrap_or_default()
+    }) {
+        return Err("已存在同名分组/接口".into());
+    }
+    repo::rename_group(&db, &team_key, &project_key, &group_path, &new_name).await
+}
+
+#[tauri::command]
+async fn delete_group(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::delete_group(&db, &team_key, &project_key, &group_path).await
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CreatedInterface {
+    key: String,
+    file: InterfaceFile,
+}
+
+#[tauri::command]
+async fn create_interface(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    name: String,
+    description: Option<String>,
+) -> Result<CreatedInterface, String> {
+    let db = with_db(&state)?;
+    let name = domain::validate_name(&name)?;
+    let keys = dir_keys(
+        &repo::list_interface_tree(&db, &team_key, &project_key).await,
+        &group_path,
+    );
+    if keys.contains(&name) {
+        return Err("已存在同名分组/接口".into());
+    }
+    let mut iface =
+        repo::create_interface(&db, &team_key, &project_key, &group_path, &name, &name).await?;
+    if let Some(desc) = description {
+        if !desc.trim().is_empty() {
+            iface.description = desc.trim().to_string();
+            repo::save_interface(&db, &team_key, &project_key, &group_path, &name, &iface).await?;
+        }
+    }
+    Ok(CreatedInterface { key: name, file: iface })
+}
+
+/// 复制接口到同分组：内容完全一致，名称 = 原名后接 -copy（已存在则 -copy-2 / -copy-3 …），新 id
+#[tauri::command]
+async fn copy_interface(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    iface_key: String,
+) -> Result<CreatedInterface, String> {
+    let db = with_db(&state)?;
+    let src = repo::get_interface(&db, &team_key, &project_key, &group_path, &iface_key).await?;
+    let keys = dir_keys(
+        &repo::list_interface_tree(&db, &team_key, &project_key).await,
+        &group_path,
+    );
+    let key = unique_copy_key(&iface_key, &keys);
+    let created =
+        repo::create_interface(&db, &team_key, &project_key, &group_path, &key, &key).await?;
+    let mut doc = src;
+    doc.id = created.id;
+    doc.name = created.name;
+    repo::save_interface(&db, &team_key, &project_key, &group_path, &key, &doc).await?;
+    Ok(CreatedInterface { key, file: doc })
+}
+
+/// 复制后的键名：原名后接 -copy；本身已是副本（-copy 或 -copy-N）时以其原始名为基础
+fn unique_copy_key(iface_key: &str, keys: &[String]) -> String {
+    let stem = if let Some(k) = iface_key.strip_suffix("-copy") {
+        k.to_string()
+    } else if let Some(idx) = iface_key.rfind("-copy-") {
+        if iface_key[idx + 6..].chars().all(|c| c.is_ascii_digit()) {
+            iface_key[..idx].to_string()
+        } else {
+            iface_key.to_string()
+        }
+    } else {
+        iface_key.to_string()
+    };
+    let mut key = format!("{stem}-copy");
+    let mut n = 1;
+    while keys.iter().any(|k| k == &key) {
+        n += 1;
+        key = format!("{stem}-copy-{n}");
+    }
+    key
+}
+
+#[tauri::command]
+async fn get_interface(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    iface_key: String,
+) -> Result<InterfaceFile, String> {
+    let db = with_db(&state)?;
+    repo::get_interface(&db, &team_key, &project_key, &group_path, &iface_key).await
+}
+
+#[tauri::command]
+async fn save_interface(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    iface_key: String,
+    iface: InterfaceFile,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::save_interface(&db, &team_key, &project_key, &group_path, &iface_key, &iface).await
+}
+
+#[tauri::command]
+async fn rename_interface(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    iface_key: String,
+    new_name: String,
+) -> Result<String, String> {
+    let db = with_db(&state)?;
+    let new_name = domain::validate_name(&new_name)?;
+    if new_name != iface_key {
+        let keys = dir_keys(
+            &repo::list_interface_tree(&db, &team_key, &project_key).await,
+            &group_path,
+        );
+        if keys.iter().any(|k| k == &new_name) {
+            return Err("已存在同名分组/接口".into());
+        }
+    }
+    repo::rename_interface(&db, &team_key, &project_key, &group_path, &iface_key, &new_name)
+        .await?;
+    Ok(new_name)
+}
+
+#[tauri::command]
+async fn delete_interface(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    iface_key: String,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::delete_interface(&db, &team_key, &project_key, &group_path, &iface_key).await
+}
+
+// ----- 快捷请求 -----
+//
+// 与环境无关的临时接口：URL 由用户手写完整地址（含 host），不继承环境变量与 host；
+// 名称可重名（无唯一键），仅接受与接口相同的展示名编辑流程。
+
+#[tauri::command]
+async fn list_quick_tree(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+) -> Result<domain::QuickTree, String> {
+    let db = with_db(&state)?;
+    Ok(repo::list_quick_tree(&db, &team_key, &project_key).await)
+}
+
+#[tauri::command]
+async fn create_quick_group(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    parent_id: Option<i64>,
+    name: String,
+) -> Result<domain::QuickGroupSummary, String> {
+    let db = with_db(&state)?;
+    repo::create_quick_group(&db, &team_key, &project_key, parent_id, &name).await
+}
+
+#[tauri::command]
+async fn rename_quick_group(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    id: i64,
+    new_name: String,
+) -> Result<String, String> {
+    let db = with_db(&state)?;
+    repo::rename_quick_group(&db, &team_key, &project_key, id, &new_name).await
+}
+
+#[tauri::command]
+async fn delete_quick_group(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    id: i64,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::delete_quick_group(&db, &team_key, &project_key, id).await
+}
+
+#[tauri::command]
+async fn move_quick_group(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    id: i64,
+    parent_id: Option<i64>,
+    before_id: Option<i64>,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::move_quick_group(&db, &team_key, &project_key, id, parent_id, before_id).await
+}
+
+#[tauri::command]
+async fn create_quick_request(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_id: Option<i64>,
+    name: String,
+) -> Result<domain::QuickRequestSummary, String> {
+    let db = with_db(&state)?;
+    repo::create_quick_request(&db, &team_key, &project_key, group_id, &name).await
+}
+
+#[tauri::command]
+async fn get_quick_request(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    id: i64,
+) -> Result<InterfaceFile, String> {
+    let db = with_db(&state)?;
+    let (_, doc) = repo::get_quick_request(&db, &team_key, &project_key, id).await?;
+    Ok(doc)
+}
+
+#[tauri::command]
+async fn save_quick_request(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    id: i64,
+    iface: InterfaceFile,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::save_quick_request(&db, &team_key, &project_key, id, &iface).await
+}
+
+/// 复制快捷请求（同分组，名称后接 -copy）
+#[tauri::command]
+async fn copy_quick_request(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    id: i64,
+) -> Result<domain::QuickRequestSummary, String> {
+    let db = with_db(&state)?;
+    repo::copy_quick_request(&db, &team_key, &project_key, id).await
+}
+
+/// 移动快捷请求到目标分组（group_id 为空 = 回到未分组根层）；
+/// `before_id` 指定插入到同组某快捷请求之前（None = 末尾），同分组调用即实现拖拽排序。
+#[tauri::command]
+async fn move_quick_request(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    id: i64,
+    group_id: Option<i64>,
+    before_id: Option<i64>,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::move_quick_request(&db, &team_key, &project_key, id, group_id, before_id).await
+}
+
+/// 重命名快捷请求：仅改显示名（不校验唯一性），返回新名称
+#[tauri::command]
+async fn rename_quick_request(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    id: i64,
+    new_name: String,
+) -> Result<String, String> {
+    let db = with_db(&state)?;
+    repo::rename_quick_request(&db, &team_key, &project_key, id, &new_name).await
+}
+
+#[tauri::command]
+async fn delete_quick_request(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    id: i64,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::delete_quick_request(&db, &team_key, &project_key, id).await
+}
+
+// ----- 环境 / 项目设置 -----
+
+#[tauri::command]
+async fn list_environments(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+) -> Result<Vec<domain::EnvironmentSummary>, String> {
+    let db = with_db(&state)?;
+    Ok(repo::list_environments(&db, &team_key, &project_key).await)
+}
+
+#[tauri::command]
+async fn get_environment(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    env_id: String,
+) -> Result<EnvironmentFile, String> {
+    let db = with_db(&state)?;
+    repo::get_environment(&db, &team_key, &project_key, &env_id).await
+}
+
+#[tauri::command]
+async fn save_environment(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    env: EnvironmentFile,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::save_environment(&db, &team_key, &project_key, env).await
+}
+
+#[tauri::command]
+async fn delete_environment(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    env_id: String,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::delete_environment(&db, &team_key, &project_key, &env_id).await
+}
+
+#[tauri::command]
+async fn set_active_environment(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    env_id: String,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::set_active_environment(&db, &team_key, &project_key, &env_id).await
+}
+
+#[tauri::command]
+async fn get_project_settings(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+) -> Result<ProjectSettings, String> {
+    let db = with_db(&state)?;
+    repo::get_project_settings(&db, &team_key, &project_key).await
+}
+
+#[tauri::command]
+async fn save_project_settings(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    settings: ProjectSettings,
+) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::save_project_settings(&db, &team_key, &project_key, settings).await
+}
+
+// ----- 发送请求 -----
+
+/// 环境 host 强制约束：
+/// - 当前环境未配置 host → 拒绝（不发请求、不记录历史）
+/// - 地址形态：`{{host}}` 模板 / 裸路径（如 /api/login，host 由环境注入）→ 放行；
+///   完整地址（http(s)://）→ 必须是旧数据且以当前环境 host 开头才放行。
+/// 校验基于未解析的原始模板，避免变量覆盖/解析差异导致的误判。
+fn validate_env_host(iface_url: &str, env: &EnvironmentFile) -> Result<(), http::SendErrorInfo> {
+    let host = env.host.trim().trim_end_matches('/');
+    if host.is_empty() {
+        return Err(http::SendErrorInfo {
+            kind: "host".into(),
+            message: "当前环境未配置 host，请先在环境管理中设置后再发送".into(),
+        });
+    }
+    let url = iface_url.trim();
+    if url.is_empty() {
+        return Err(http::SendErrorInfo {
+            kind: "host".into(),
+            message: "请求地址为空，请在地址栏填写路径（如 /api/login）".into(),
+        });
+    }
+    if url.starts_with("{{host}}") || url.starts_with("{host}") {
+        return Ok(());
+    }
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        // 裸路径：host 由当前环境注入
+        return Ok(());
+    }
+    if url.starts_with(&format!("{host}/")) || *url == *host {
+        return Ok(());
+    }
+    Err(http::SendErrorInfo {
+        kind: "host".into(),
+        message: format!("请求地址必须来自当前环境的 host（{host}）：请填写路径形式（如 /api/login），不允许直接填写完整地址"),
+    })
+}
+
+/// 把任意可序列化值转 JSON 文本（序列化失败返回 None；此处用于历史快照，尽力而为）
+fn to_json_str<T: serde::Serialize>(v: &T) -> Option<String> {
+    serde_json::to_string(v).ok()
+}
+
+/// 把一次发送（成功或失败）写入请求历史。失败是尽力而为（不阻断发送结果）。
+/// 返回新记录（供 resend_history 直接回传前端）。
+/// `iface` 应为已解析实际值的快照（resolve_iface 产物）：url 列即真实请求地址。
+#[allow(clippy::too_many_arguments)]
+async fn record_history(
+    db: &sea_orm::DatabaseConnection,
+    team_key: &str,
+    project_key: &str,
+    settings: &ProjectSettings,
+    env: &EnvironmentFile,
+    iface: &InterfaceFile,
+    iface_key: Option<String>,
+    iface_name: Option<String>,
+    refs: repo::HistoryRefs,
+    result: &Result<http::SendResponse, http::SendErrorInfo>,
+) -> Option<HistoryRecord> {
+    let input = match result {
+        Ok(res) => repo::HistoryInput {
+            team_key: team_key.into(),
+            project_key: project_key.into(),
+            project_name: settings.name.clone(),
+            env_id: env.id.clone(),
+            env_name: env.name.clone(),
+            iface_key: iface_key.unwrap_or_default(),
+            iface_name: iface_name.unwrap_or_else(|| iface.name.clone()),
+            method: iface.method.clone(),
+            url: if res.resolved_url.trim().is_empty() {
+                iface.url.clone()
+            } else {
+                res.resolved_url.clone()
+            },
+            status: Some(res.status),
+            ok: true,
+            time_ms: res.time_ms,
+            created_at_ms: domain::now_unix_ms(),
+            team_id: refs.team_id,
+            project_id: refs.project_id,
+            group_id: refs.group_id,
+            iface_id: refs.iface_id,
+            doc_json: to_json_str(iface).unwrap_or_default(),
+            env_json: to_json_str(env).unwrap_or_default(),
+            global_variables_json: to_json_str(&settings.global_variables).unwrap_or_default(),
+            global_params_json: to_json_str(&settings.global_params).unwrap_or_default(),
+            response_json: to_json_str(res),
+            error_json: None,
+        },
+        Err(err) => repo::HistoryInput {
+            team_key: team_key.into(),
+            project_key: project_key.into(),
+            project_name: settings.name.clone(),
+            env_id: env.id.clone(),
+            env_name: env.name.clone(),
+            iface_key: iface_key.unwrap_or_default(),
+            iface_name: iface_name.unwrap_or_else(|| iface.name.clone()),
+            method: iface.method.clone(),
+            url: iface.url.clone(),
+            status: None,
+            ok: false,
+            time_ms: 0,
+            created_at_ms: domain::now_unix_ms(),
+            team_id: refs.team_id,
+            project_id: refs.project_id,
+            group_id: refs.group_id,
+            iface_id: refs.iface_id,
+            doc_json: to_json_str(iface).unwrap_or_default(),
+            env_json: to_json_str(env).unwrap_or_default(),
+            global_variables_json: to_json_str(&settings.global_variables).unwrap_or_default(),
+            global_params_json: to_json_str(&settings.global_params).unwrap_or_default(),
+            response_json: None,
+            error_json: to_json_str(err),
+        },
+    };
+    match repo::insert_history(db, input).await {
+        Ok(model) => Some(repo::history_record(&model)),
+        Err(e) => {
+            eprintln!("记录请求历史失败：{e}");
+            None
+        }
+    }
+}
+
+#[tauri::command]
+async fn send_request(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    env_id: String,
+    iface: InterfaceFile,
+    iface_key: Option<String>,
+    iface_name: Option<String>,
+    group_path: Option<Vec<String>>,
+) -> Result<http::SendResponse, http::SendErrorInfo> {
+    let db = state
+        .db
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| http::SendErrorInfo {
+            kind: "http".into(),
+            message: "尚未选择数据根目录".into(),
+        })?;
+    let http_err = |message: String| http::SendErrorInfo { kind: "http".into(), message };
+    let env = repo::get_environment(&db, &team_key, &project_key, &env_id)
+        .await
+        .map_err(http_err)?;
+    let settings = repo::get_project_settings(&db, &team_key, &project_key)
+        .await
+        .map_err(http_err)?;
+    let opts = http::SendOptions {
+        proxy: repo::get_workspace(&db).await.proxy,
+        cookie_jar: Some(state.cookiejar.clone()),
+        ..Default::default()
+    };
+    // 历史快照记录"发送时的实际值"（变量全部展开）；发送本身语义不变（对已解析输入幂等）
+    let resolved = http::resolve_iface(&iface, &env, &settings.global_variables);
+    let refs = repo::resolve_history_refs(
+        &db,
+        &team_key,
+        &project_key,
+        &group_path.unwrap_or_default(),
+        iface_key.as_deref().unwrap_or_default(),
+    )
+    .await;
+    // 环境 host 强制约束：未配置 host 或地址不来自当前环境 → 不发送、不记录历史。
+    // 基于原始模板校验（{{host}} 开头即视为环境 host 注入）
+    if let Err(e) = validate_env_host(&iface.url, &env) {
+        return Err(e);
+    }
+    let result = http::send(
+        &resolved,
+        &env,
+        &settings.global_variables,
+        &settings.global_params,
+        &opts,
+    )
+    .await;
+    record_history(
+        &db,
+        &team_key,
+        &project_key,
+        &settings,
+        &env,
+        &resolved,
+        iface_key,
+        iface_name,
+        refs,
+        &result,
+    )
+    .await;
+    result
+}
+
+/// 快捷请求发送：**host 不来自环境变量**，必须手写完整地址（含 http(s)://）。
+/// 变量只来自项目全局变量与接口级变量（不注入环境变量与环境 host）；
+/// 项目全局参数照常注入（与其它发送一致）。历史快照的 host 记为该地址的 origin，
+/// 使「请求历史」里的再次发送仍按同一 host 校验与解析（无需特殊分支）。
+#[tauri::command]
+async fn send_quick_request(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    id: i64,
+    iface: InterfaceFile,
+) -> Result<http::SendResponse, http::SendErrorInfo> {
+    let db = state
+        .db
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| http::SendErrorInfo {
+            kind: "http".into(),
+            message: "尚未选择数据根目录".into(),
+        })?;
+    let http_err = |message: String| http::SendErrorInfo { kind: "http".into(), message };
+    let (name, _) = repo::get_quick_request(&db, &team_key, &project_key, id)
+        .await
+        .map_err(http_err)?;
+    let settings = repo::get_project_settings(&db, &team_key, &project_key)
+        .await
+        .map_err(http_err)?;
+    // 空环境：不注入任何环境变量，`{{host}}` 也不会被环境 host 解析
+    let bare_env = EnvironmentFile {
+        version: domain::SCHEMA_VERSION,
+        id: String::new(),
+        file: String::new(),
+        name: "快捷请求".into(),
+        host: String::new(),
+        builtin: false,
+        variables: Vec::new(),
+    };
+    let resolved = http::resolve_iface(&iface, &bare_env, &settings.global_variables);
+    let url = resolved.url.trim().to_string();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(http::SendErrorInfo {
+            kind: "url".into(),
+            message: "快捷请求不继承环境变量，请在地址栏填写完整地址（含 http:// 或 https://）".into(),
+        });
+    }
+    let snapshot_env = EnvironmentFile {
+        host: http::origin_of(&url),
+        ..bare_env
+    };
+    let opts = http::SendOptions {
+        proxy: repo::get_workspace(&db).await.proxy,
+        cookie_jar: Some(state.cookiejar.clone()),
+        ..Default::default()
+    };
+    let result = http::send(
+        &resolved,
+        &snapshot_env,
+        &settings.global_variables,
+        &settings.global_params,
+        &opts,
+    )
+    .await;
+    record_history(
+        &db,
+        &team_key,
+        &project_key,
+        &settings,
+        &snapshot_env,
+        &resolved,
+        None,
+        Some(name),
+        repo::quick_request_refs(&db, &team_key, &project_key).await,
+        &result,
+    )
+    .await;
+    result
+}
+
+// ----- 请求历史 -----
+
+#[tauri::command]
+async fn list_request_history(
+    state: State<'_, AppState>,
+) -> Result<Vec<HistorySummary>, String> {
+    let db = with_db(&state)?;
+    Ok(repo::list_history(&db).await)
+}
+
+#[tauri::command]
+async fn get_request_history(state: State<'_, AppState>, id: i64) -> Result<HistoryRecord, String> {
+    let db = with_db(&state)?;
+    repo::get_history(&db, id).await
+}
+
+#[tauri::command]
+async fn delete_request_history(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::delete_history(&db, id).await
+}
+
+#[tauri::command]
+async fn clear_request_history(state: State<'_, AppState>) -> Result<(), String> {
+    let db = with_db(&state)?;
+    repo::clear_history(&db).await
+}
+
+/// 按历史快照重发请求：使用记录时的环境/全局变量快照（项目/环境被删后仍可重发），
+/// 并使用当前代理与会话；重发本身记为新的一条历史。
+/// `iface` 可传入前端编辑后的接口定义（重发用编辑后的文档，环境/全局变量仍用快照）。
+#[tauri::command]
+async fn resend_history(
+    state: State<'_, AppState>,
+    id: i64,
+    iface: Option<InterfaceFile>,
+) -> Result<HistoryRecord, String> {
+    let db = with_db(&state)?;
+    let rec = repo::get_history(&db, id).await?;
+    // 环境 host 强制约束：未配置或地址不来自快照环境 → 不发送、不记录历史。
+    // 基于原始模板校验：编辑时 {{host}} 开头即通过；未编辑时快照 URL 已是解析值（以缓存环境 host 开头）
+    let tpl_url = iface.as_ref().map_or(&rec.doc.url, |f| &f.url);
+    validate_env_host(tpl_url, &rec.env).map_err(|e| e.message)?;
+    // 编辑后的文档需重新解析为实际值（用户可能改入 {{变量}}）；快照本身已是解析值，直接用
+    let doc = match iface {
+        Some(f) => http::resolve_iface(&f, &rec.env, &rec.global_variables),
+        None => rec.doc.clone(),
+    };
+    let opts = http::SendOptions {
+        proxy: repo::get_workspace(&db).await.proxy,
+        cookie_jar: Some(state.cookiejar.clone()),
+        ..Default::default()
+    };
+    let result = http::send(
+        &doc,
+        &rec.env,
+        &rec.global_variables,
+        &rec.global_params,
+        &opts,
+    )
+    .await;
+    let settings = ProjectSettings {
+        name: rec.project_name.clone(),
+        active_environment_id: Some(rec.env_id.clone()),
+        global_variables: rec.global_variables.clone(),
+        global_params: rec.global_params.clone(),
+    };
+    record_history(
+        &db,
+        &rec.team_key,
+        &rec.project_key,
+        &settings,
+        &rec.env,
+        &doc,
+        Some(rec.iface_key.clone()),
+        Some(rec.iface_name.clone()),
+        repo::HistoryRefs {
+            team_id: rec.team_id,
+            project_id: rec.project_id,
+            group_id: rec.group_id,
+            iface_id: rec.iface_id,
+        },
+        &result,
+    )
+    .await
+    .ok_or_else(|| "重发失败：未能写入历史".to_string())
+}
+
+#[tauri::command]
+async fn run_interfaces(
+    state: State<'_, AppState>,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+) -> Result<runner::RunReport, String> {
+    let db = with_db(&state)?;
+    runner::run_project(
+        &db,
+        &team_key,
+        &project_key,
+        Some(&group_path).filter(|g| !g.is_empty()).map(|x| x.as_slice()),
+    )
+    .await
+}
+
+// ----- 导入 / 导出 -----
+
+fn detect_spec_kind(content: &str) -> (&'static str, bool) {
+    let trimmed = content.trim_start();
+    if trimmed.starts_with('{') {
+        if trimmed.contains("\"openapi\"") && trimmed.contains("\"paths\"") {
+            return ("openapi", false);
+        }
+        if trimmed.contains("\"item\"") && trimmed.contains("\"info\"") {
+            return ("postman", false);
+        }
+        ("openapi", false)
+    } else {
+        // 尝试 YAML
+        ("openapi", true)
+    }
+}
+
+#[tauri::command]
+async fn import_spec_into_project(
+    state: State<'_, AppState>,
+    path: String,
+    team_key: String,
+    project_key: String,
+) -> Result<(imports::ImportReport, String), String> {
+    let db = with_db(&state)?;
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败：{e}"))?;
+    let (kind, is_yaml) = detect_spec_kind(&content);
+    let (name, ifaces) = match kind {
+        "postman" => imports::parse_postman(&content)?,
+        _ => imports::parse_openapi(&content, is_yaml)?,
+    };
+    let report = imports::import_into_project(&db, &team_key, &project_key, &ifaces).await?;
+    Ok((report, name))
+}
+
+#[tauri::command]
+async fn import_spec_new_project(
+    state: State<'_, AppState>,
+    path: String,
+    team_key: String,
+) -> Result<(imports::ImportReport, String), String> {
+    let db = with_db(&state)?;
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败：{e}"))?;
+    let (kind, is_yaml) = detect_spec_kind(&content);
+    let (name, ifaces) = match kind {
+        "postman" => imports::parse_postman(&content)?,
+        _ => imports::parse_openapi(&content, is_yaml)?,
+    };
+    let project_key = match domain::validate_name(&name) {
+        Ok(k) => k,
+        Err(_) => {
+            let replaced: String = name
+                .trim()
+                .chars()
+                .map(|c| {
+                    if c <= '\u{1f}'
+                        || matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+                    {
+                        '-'
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            let replaced = replaced
+                .trim_end_matches(|c| c == '.' || c == '-' || c == ' ')
+                .to_string();
+            if replaced.is_empty() {
+                format!("imported-{}", uuid::Uuid::new_v4())
+            } else {
+                replaced
+            }
+        }
+    };
+    if repo::list_projects(&db, &team_key)
+        .await
+        .iter()
+        .any(|p| p.key == project_key)
+    {
+        return Err(format!("已存在同名项目 {project_key}，请改为导入到现有项目"));
+    }
+    repo::create_project(&db, &team_key, &project_key, &name).await?;
+    let report = imports::import_into_project(&db, &team_key, &project_key, &ifaces).await?;
+    Ok((report, name))
+}
+
+#[tauri::command]
+async fn export_openapi_file(
+    state: State<'_, AppState>,
+    path: String,
+    team_key: String,
+    project_key: String,
+    yaml: bool,
+) -> Result<Vec<String>, String> {
+    let db = with_db(&state)?;
+    let out = imports::export_openapi(&db, &team_key, &project_key, yaml).await?;
+    std::fs::write(&path, out.content).map_err(|e| format!("写入文件失败：{e}"))?;
+    Ok(out.warnings)
+}
+
+#[tauri::command]
+async fn export_interface_openapi_file(
+    state: State<'_, AppState>,
+    path: String,
+    team_key: String,
+    project_key: String,
+    group_path: Vec<String>,
+    iface_key: String,
+    yaml: bool,
+) -> Result<Vec<String>, String> {
+    let db = with_db(&state)?;
+    let out = imports::export_openapi_interface(
+        &db,
+        &team_key,
+        &project_key,
+        &group_path,
+        &iface_key,
+        yaml,
+    )
+    .await?;
+    std::fs::write(&path, out.content).map_err(|e| format!("写入文件失败：{e}"))?;
+    Ok(out.warnings)
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![
+            get_session,
+            list_teams,
+            list_projects,
+            create_team,
+            create_project,
+            delete_team,
+            delete_project,
+            rename_team,
+            rename_project,
+            move_interface,
+            move_group,
+            save_workspace,
+            list_interface_tree,
+            create_group,
+            rename_group,
+            delete_group,
+            create_interface,
+            copy_interface,
+            get_interface,
+            save_interface,
+            rename_interface,
+            delete_interface,
+            list_quick_tree,
+            create_quick_group,
+            rename_quick_group,
+            delete_quick_group,
+            move_quick_group,
+            create_quick_request,
+            copy_quick_request,
+            move_quick_request,
+            get_quick_request,
+            save_quick_request,
+            rename_quick_request,
+            delete_quick_request,
+            list_environments,
+            get_environment,
+            save_environment,
+            delete_environment,
+            set_active_environment,
+            get_project_settings,
+            save_project_settings,
+            send_request,
+            send_quick_request,
+            list_request_history,
+            get_request_history,
+            delete_request_history,
+            clear_request_history,
+            resend_history,
+            run_interfaces,
+            import_spec_into_project,
+            import_spec_new_project,
+            export_openapi_file,
+            export_interface_openapi_file,
+        ])
+        .on_page_load(|webview, payload| {
+            // 窗口初始为隐藏；首屏加载完成后再显示，避免启动白屏
+            if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                let _ = webview.window().show();
+            }
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_root_is_home_dot_apidock() {
+        // 只断言路径形态，不创建目录
+        let root = default_data_root().expect("应能解析用户主目录");
+        assert!(root.ends_with(".apidock"), "默认根应为 <home>/.apidock，实际：{}", root.display());
+    }
+}
